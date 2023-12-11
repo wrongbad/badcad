@@ -22,7 +22,7 @@ pip install git+https://github.com/wrongbad/badcad.git
 
 ```py
 from badcad import *
-set_default_fn(64)
+set_circular_segments(64)
 sphere(r=1) - sphere(r=1).move(1,0,0)
 ```
 

@@ -95,7 +95,9 @@ class BManifold:
     def __sub__(self, other):
         return BManifold(self.man - other.man)
 
-    def __xor__(self, other):
+    def __and__(self, other):
+        # manifold3d uses XOR operator for intersection
+        # but intersection is actually a boolean AND op
         return BManifold(self.man ^ other.man)
 
     def decompose(self):
@@ -123,37 +125,35 @@ class BManifold:
         return self.man.num_edge()
     
 
-_default_fn = 12
+def get_circular_segments(radius):
+    manifold3d.get_circular_segments(radius)
 
-def set_default_fn(fn):
-    global _default_fn
-    _default_fn = fn
+def set_circular_segments(nseg):
+    manifold3d.set_circular_segments(nseg)
 
-def get_default_fn():
-    return _default_fn
+def set_min_circular_angle(degrees):
+    manifold3d.set_min_circular_angle(degrees)
 
-# def preview(manifold):
-#     return ManifoldPreview(manifold)
+def set_min_circular_edge_length(length):
+    manifold3d.set_min_circular_edge_length(length)
 
-def hull(manifolds):
-    return BManifold(manifold3d.Manifold.batch_hull(manifolds))
+def hull(*manifolds):
+    mans = [bm.man for bm in manifolds]
+    return BManifold(manifold3d.Manifold.batch_hull(mans))
 
 def cube(x=1, y=1, z=1, center=False):
     return BManifold(manifold3d.Manifold.cube(x, y, z, center=center))
 
-def cylinder(h=1, d=1, r=None, center=False, fn=None):
+def cylinder(h=1, d=1, r=None, center=False, fn=0):
     r = r or d/2
-    fn = fn or get_default_fn()
     return BManifold(manifold3d.Manifold.cylinder(
         h, r, r, circular_segments=fn, center=center))
 
-def conic(h=1, d1=1, d2=1, r1=None, r2=None, center=False, fn=None):
+def conic(h=1, d1=1, d2=1, r1=None, r2=None, center=False, fn=0):
     r1 = r1 or d1/2
     r2 = r2 or d2/2
-    fn = fn or get_default_fn()
     return BManifold(manifold3d.Manifold.cylinder(
         h, r1, r2, circular_segments=fn, center=center))
 
-def sphere(r=1, fn=None):
-    fn = fn or get_default_fn()
+def sphere(r=1, fn=0):
     return BManifold(manifold3d.Manifold.sphere(r, fn))
