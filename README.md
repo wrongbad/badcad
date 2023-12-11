@@ -8,13 +8,12 @@ most of the hard work is done by
 
 this project aims to focus on usability in a jupyter environment
 
-first step is finish wrapping / exposing the manifold3d APIs
-
-next step work out a nice pattern for procedural mesh creation
-
 # setup
 
 ```bash
+# temporary fix for polygon revolve
+pip install git+https://github.com/wrongbad/manifold.git
+
 pip install git+https://github.com/wrongbad/badcad.git
 ```
 
@@ -22,11 +21,17 @@ pip install git+https://github.com/wrongbad/badcad.git
 
 ```py
 from badcad import *
-set_circular_segments(64)
 sphere(r=1) - sphere(r=1).move(1,0,0)
 ```
 
 ![spheres](spheres.png)
+
+```py
+deathstar = sphere(r=1) - sphere(r=0.5).move(1.2,0,0)
+
+with open('deathstar.stl', 'wb') as f:
+    f.write(deathstar.stl())
+```
 
 # vscode
 

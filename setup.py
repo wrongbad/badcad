@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='badcad',
-    version='0.0.1',
+    version='0.0.2',
     url='https://github.com/wrongbad/badcad.git',
     author='wrongbad',
     description='csg for python/jupyter environments',
