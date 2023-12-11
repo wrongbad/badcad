@@ -2,7 +2,8 @@ import pythreejs
 import manifold3d
 import numpy as np
 
-class Solid:
+
+class BManifold:
     def __init__(self, manifold):
         self.man = manifold
 
@@ -27,13 +28,6 @@ class Solid:
         verts3 = np.stack((
                 verts[tris[:,0]], verts[tris[:,1]], verts[tris[:,2]]
             ), axis=1, dtype=np.float32)
-
-        # geometry = pythreejs.BufferGeometry(
-        #     attributes = dict(
-        #         position = pythreejs.BufferAttribute(verts),
-        #     ),
-        #     index = pythreejs.BufferAttribute(tris.flatten())
-        # )
 
         index = np.arange(verts3.size // 3, dtype=np.uint32)
         geometry = pythreejs.BufferGeometry(
@@ -92,14 +86,74 @@ class Solid:
 
         return renderer._repr_mimebundle_(**kwargs)
 
-    def translate(self, x, y, z):
-        self.man = self.man.translate(x, y, z)
-        return self
-    
+    def move(self, x, y, z):
+        return BManifold(self.man.translate(x, y, z))
+
+    def __add__(self, other):
+        return BManifold(self.man + other.man)
+
     def __sub__(self, other):
-        self.man = self.man - other.man
-        return self
+        return BManifold(self.man - other.man)
 
+    def __xor__(self, other):
+        return BManifold(self.man ^ other.man)
 
-def sphere(r=1, fn=12):
-    return Solid(manifold3d.Manifold.sphere(r, fn))
+    def decompose(self):
+        return [BManifold(m) for m in self.man.decompose()]
+
+    def genus(self):
+        return self.man.get_genus()
+
+    def get_surface_area(self):
+        return self.man.get_surface_area()
+
+    def get_volume(self):
+        return self.man.get_volume()
+
+    def hull(self):
+        return BManifold(self.man.hull())
+
+    def is_empty(self):
+        return self.man.is_empty()
+
+    def mirror(self, vec3):
+        return BManifold(self.man.mirror(vec3))
+
+    def num_edge(self):
+        return self.man.num_edge()
+    
+
+_default_fn = 12
+
+def set_default_fn(fn):
+    global _default_fn
+    _default_fn = fn
+
+def get_default_fn():
+    return _default_fn
+
+# def preview(manifold):
+#     return ManifoldPreview(manifold)
+
+def hull(manifolds):
+    return BManifold(manifold3d.Manifold.batch_hull(manifolds))
+
+def cube(x=1, y=1, z=1, center=False):
+    return BManifold(manifold3d.Manifold.cube(x, y, z, center=center))
+
+def cylinder(h=1, d=1, r=None, center=False, fn=None):
+    r = r or d/2
+    fn = fn or get_default_fn()
+    return BManifold(manifold3d.Manifold.cylinder(
+        h, r, r, circular_segments=fn, center=center))
+
+def conic(h=1, d1=1, d2=1, r1=None, r2=None, center=False, fn=None):
+    r1 = r1 or d1/2
+    r2 = r2 or d2/2
+    fn = fn or get_default_fn()
+    return BManifold(manifold3d.Manifold.cylinder(
+        h, r1, r2, circular_segments=fn, center=center))
+
+def sphere(r=1, fn=None):
+    fn = fn or get_default_fn()
+    return BManifold(manifold3d.Manifold.sphere(r, fn))
