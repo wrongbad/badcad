@@ -19,6 +19,12 @@ pip install pythreejs manifold3d
 pip install git+https://github.com/wrongbad/badcad.git
 ```
 
-# demo
+# example
 
-see [demo.ipynb](demo.ipynb)
+```py
+import badcad as bad
+
+bad.sphere(1,64) - bad.sphere(1,64).translate(1,0,0)
+```
+
+![spheres](spheres.png)

@@ -101,5 +101,5 @@ class Solid:
         return self
 
 
-def sphere(r=1, segments=12):
-    return Solid(manifold3d.Manifold.sphere(r, segments))
+def sphere(r=1, fn=12):
+    return Solid(manifold3d.Manifold.sphere(r, fn))
