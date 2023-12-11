@@ -21,9 +21,9 @@ pip install git+https://github.com/wrongbad/badcad.git
 # example
 
 ```py
-import badcad as bad
-
-bad.sphere(1,64) - bad.sphere(1,64).translate(1,0,0)
+from badcad import *
+set_default_fn(64)
+sphere(r=1) - sphere(r=1).move(1,0,0)
 ```
 
 ![spheres](spheres.png)
