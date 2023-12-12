@@ -11,8 +11,8 @@ this project aims to focus on usability in a jupyter environment
 # setup
 
 ```bash
-# temporary fix for polygon revolve
-pip install git+https://github.com/wrongbad/manifold.git
+# temporary until changes make it upstream
+pip install git+https://github.com/wrongbad/manifold.git@develop
 
 pip install git+https://github.com/wrongbad/badcad.git
 ```
@@ -21,17 +21,22 @@ pip install git+https://github.com/wrongbad/badcad.git
 
 ```py
 from badcad import *
-sphere(r=1) - sphere(r=1).move(1,0,0)
+plus = square(3, 1, center=True) + square(1, 3, center=True)
+p_lil = plus.offset(-0.4, 'round')
+p_big = plus.offset(+0.4, 'round')
+p_big.extrude_to(p_lil, 1)
 ```
 
-![spheres](spheres.png)
+![plus](plus.png)
 
 ```py
-deathstar = sphere(r=1) - sphere(r=0.5).move(1.2,0,0)
-
-with open('deathstar.stl', 'wb') as f:
-    f.write(deathstar.stl())
+from badcad import *
+deathstar = sphere(r=1) - sphere(r=1).move(1,0,0)
+deathstar.to_stl('deathstar.stl')
+deathstar
 ```
+
+![deathstar](deathstar.png)
 
 # vscode
 

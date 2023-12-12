@@ -3,12 +3,127 @@ import manifold3d
 from manifold3d import Manifold, CrossSection
 import numpy as np
 
-def triangle_normals(tris, verts):
+def triangle_normals(verts, tris):
     a = verts[tris[:,1]] - verts[tris[:,0]]
     b = verts[tris[:,2]] - verts[tris[:,1]]
     tnormals = np.cross(a, b)
     tnormals /= np.linalg.norm(tnormals, axis=-1, keepdims=True)
     return tnormals
+
+# low level mesh preview - shared with Solid preview
+# can be helpful to debug backwards triangles and stuff
+def preview_raw(verts, tris):
+
+    box0 = np.min(verts, axis=0)
+    box1 = np.max(verts, axis=0)
+
+    sz = np.linalg.norm(box1-box0)
+    mid = (box0+box1)/2
+
+    verts = verts - mid
+    tnormals = triangle_normals(verts, tris)
+
+    vnormals = np.stack(
+        (tnormals, tnormals, tnormals), axis=1, dtype=np.float32)
+
+    verts3 = np.stack((
+            verts[tris[:,0]], verts[tris[:,1]], verts[tris[:,2]]
+        ), axis=1, dtype=np.float32)
+
+    index = np.arange(verts3.size // 3, dtype=np.uint32)
+    geometry = pythreejs.BufferGeometry(
+        attributes = dict(
+            position = pythreejs.BufferAttribute(verts3),
+            normal = pythreejs.BufferAttribute(vnormals),
+        ),
+        index = pythreejs.BufferAttribute(index)
+    )
+
+    material = pythreejs.MeshPhysicalMaterial(
+        color = '#aaaa22',
+        reflectivity = 0.8,
+        clearCoat = 0.5,
+        clearCoatRoughness = 0.4,
+    );
+
+    threemesh = pythreejs.Mesh(geometry, material)
+
+    lights = [
+        pythreejs.DirectionalLight(
+            color='white', 
+            position=[3, 5, 1], 
+            intensity=0.3
+        ),
+        pythreejs.DirectionalLight(
+            color='white', 
+            position=[0, 0, 3], 
+            intensity=0.3
+        ),
+        pythreejs.DirectionalLight(
+            color='white', 
+            position=[0, 6, 1], 
+            intensity=0.3
+        ),
+        pythreejs.DirectionalLight(
+            color='white', 
+            position=[3, 5, 1], 
+            intensity=0.3
+        )
+    ]
+
+    camera = pythreejs.PerspectiveCamera(
+        position=[0, 0, sz*1.6], 
+        up=[0, 1, 0], 
+        children=lights
+    )
+
+    controls = pythreejs.OrbitControls(
+        controlling=camera, 
+        rotateSpeed=0.5, 
+        zoomSpeed=0.5
+    )
+
+    scene = pythreejs.Scene(
+        children=[
+            threemesh, 
+            camera, 
+            pythreejs.AmbientLight(color='#aaa')
+        ], 
+        background=None
+    )
+
+    return pythreejs.Renderer(
+        camera=camera,
+        scene=scene,
+        alpha=True,
+        clearOpacity=0.2,
+        controls=[controls],
+        width=480, 
+        height=480
+    )
+
+# given 2 polygons, find a list of index pairs
+# which walk the perimeters of both such that
+# distance between each pair is minimized
+def polygon_nearest_alignment(va, vb):
+    dist = lambda x: np.sum(x ** 2, axis=-1)
+    j0 = np.argmin(dist(vb - va[0]))
+    i, j = 0, j0
+    na, nb = len(va), len(vb)
+    out = []
+    while True:
+        ip1, jp1 = (i+1)%na, (j+1)%nb
+        d0 = dist(va[ip1] - vb[j])
+        d1 = dist(va[i] - vb[jp1])
+        if d0 < d1:
+            out += [[ip1, j]]
+            i = ip1
+        else:
+            out += [[i, jp1]]
+            j = jp1
+        if (i,j) == (0, j0):
+            break
+    return out
 
 # wrapper for Manifold
 # adds jupyter preview & tweaks API
@@ -23,76 +138,18 @@ class Solid:
         # we create a scene on the fly with ability to customize 
         # controls and lights, etc.
 
-        box = self.bounding_box()
-        sz = max(b-a for a,b in zip(*box))
-        mid = np.array([(a+b)/2 for a,b in zip(*box)], dtype=np.float32)
+        if self.is_empty():
+            return None
+
+        # box = self.bounding_box()
+        # sz = max(b-a for a,b in zip(*box))
+        # mid = np.array([(a+b)/2 for a,b in zip(*box)], dtype=np.float32)
         raw_mesh = self.to_mesh()
 
+        verts = raw_mesh.vert_properties.astype(np.float32)
         tris = raw_mesh.tri_verts.astype(np.uint32)
-        verts = raw_mesh.vert_properties.astype(np.float32) - mid
-        tnormals = triangle_normals(tris, verts)
 
-        vnormals = np.stack(
-            (tnormals, tnormals, tnormals), axis=1, dtype=np.float32)
-
-        verts3 = np.stack((
-                verts[tris[:,0]], verts[tris[:,1]], verts[tris[:,2]]
-            ), axis=1, dtype=np.float32)
-
-        index = np.arange(verts3.size // 3, dtype=np.uint32)
-        geometry = pythreejs.BufferGeometry(
-            attributes = dict(
-                position = pythreejs.BufferAttribute(verts3),
-                normal = pythreejs.BufferAttribute(vnormals),
-            ),
-            index = pythreejs.BufferAttribute(index)
-        )
-
-        material = pythreejs.MeshPhysicalMaterial(
-            color = '#aaaa22',
-            reflectivity = 0.8,
-            clearCoat = 0.5,
-            clearCoatRoughness = 0.6,
-        );
-
-        threemesh = pythreejs.Mesh(geometry, material)
-
-        key_light = pythreejs.DirectionalLight(
-            color='white', 
-            position=[3, 5, 1], 
-            intensity=0.5
-        )
-
-        camera = pythreejs.PerspectiveCamera(
-            position=[0, 0, sz*1.6], 
-            up=[0, 1, 0], 
-            children=[key_light]
-        )
-
-        controls = pythreejs.OrbitControls(
-            controlling=camera, 
-            rotateSpeed=0.5, 
-            zoomSpeed=0.5
-        )
-
-        scene = pythreejs.Scene(
-            children=[
-                threemesh, 
-                camera, 
-                pythreejs.AmbientLight(color='#aaa')
-            ], 
-            background=None
-        )
-
-        renderer = pythreejs.Renderer(
-            camera=camera,
-            scene=scene,
-            alpha=True,
-            clearOpacity=0.2,
-            controls=[controls],
-            width=480, 
-            height=480
-        )
+        renderer = preview_raw(verts, tris)
 
         return renderer._repr_mimebundle_(**kwargs)
 
@@ -196,11 +253,11 @@ class Solid:
         xyz = self.manifold.bounding_box
         return (xyz[:3], xyz[3:]) # 2 opposing corner coordinates
 
-    def stl(self):
+    def to_stl(self, fname=None):
         mesh = self.to_mesh()
-        tris = mesh.tri_verts
+        tris = mesh.tri_verts.astype(np.uint32)
         verts = mesh.vert_properties.astype(np.float32)
-        tnormals = triangle_normals(tris, verts)
+        tnormals = triangle_normals(verts, tris)
         ntris = tris.shape[0]
         header = np.zeros(21, dtype=np.uint32)
         header[20] = ntris
@@ -209,7 +266,12 @@ class Solid:
         body[:, 12:24] = verts[tris[:,0]].view(np.int8)
         body[:, 24:36] = verts[tris[:,1]].view(np.int8)
         body[:, 36:48] = verts[tris[:,2]].view(np.int8)
-        return header.tobytes() + body.tobytes()
+        binary = header.tobytes() + body.tobytes()
+        if fname:
+            with open(fname, 'wb') as f:
+                f.write(binary)
+        else:
+            return binary
 
 
 
@@ -247,6 +309,41 @@ class Shape:
             twist_degrees=twist_degrees,
             scale_top=scale_top,
         ))
+    
+    def extrude_to(self, other, height):
+        verts1 = np.array(self.cross_section.to_polygons()[0])
+        verts1 = np.pad(verts1, [[0,0],[0,1]], constant_values=0)
+        N1 = verts1.shape[0]
+        
+        verts2 = np.array(other.cross_section.to_polygons()[0])
+        verts2 = np.pad(verts2, [[0,0],[0,1]], constant_values=height)
+
+        # flip the bottom over
+        tris1 = np.array(self.cross_section.triangulate())
+        tris1[:, 2], tris1[:, 1] = tris1[:, 1].copy(), tris1[:, 2].copy()
+
+        # offset top vertex indices
+        tris2 = np.array(other.cross_section.triangulate())
+        tris2 += N1
+
+        alignment = polygon_nearest_alignment(verts1, verts2)
+        alignment = [(a, b+N1) for a, b in alignment]
+
+        # build the skirt faces
+        tris3 = []
+        for s in range(len(alignment)):
+            i, j = alignment[s]
+            pi, pj = alignment[s-1]
+            if i != pi:
+                tris3 += [[pi, i, pj]]
+            if j != pj:
+                tris3 += [[i, j, pj]]
+        tris3 = np.array(tris3)
+
+        verts = np.concatenate((verts1, verts2))
+        tris = np.concatenate((tris1, tris2, tris3))
+        mesh = manifold3d.Mesh(verts, tris)
+        return Solid(Manifold.from_mesh(mesh))
     
     def hull(self):
         return Shape(self.cross_section.hull())
