@@ -72,7 +72,7 @@ def preview_raw(verts, tris):
     ]
 
     camera = pythreejs.PerspectiveCamera(
-        position=[0, 0, sz*1.6], 
+        position=[0, 0, sz*1.3], 
         up=[0, 1, 0], 
         children=lights
     )
@@ -80,7 +80,8 @@ def preview_raw(verts, tris):
     controls = pythreejs.OrbitControls(
         controlling=camera, 
         rotateSpeed=0.5, 
-        zoomSpeed=0.5
+        zoomSpeed=0.5,
+        enableZoom=False,
     )
 
     scene = pythreejs.Scene(
