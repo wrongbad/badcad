@@ -303,11 +303,11 @@ class Shape:
     def decompose(self):
         return [Shape(p) for p in self.cross_section.decompose()]
 
-    def extrude(self, height, fn=0, twist_degrees=0, scale_top=(1,1)):
+    def extrude(self, height, fn=0, twist=0, scale_top=(1,1)):
         return Solid(self.cross_section.extrude(
             height,
             n_divisions=fn,
-            twist_degrees=twist_degrees,
+            twist_degrees=twist,
             scale_top=scale_top,
         ))
     
@@ -406,7 +406,7 @@ class Shape:
 
 
 def get_circular_segments(radius):
-    manifold3d.get_circular_segments(radius)
+    return manifold3d.get_circular_segments(radius)
 
 def set_circular_segments(nseg):
     manifold3d.set_circular_segments(nseg)
@@ -463,6 +463,23 @@ def polygon(points, fill_rule='even_odd'):
     else:
         raise ValueError(f'{fill_rule=}')
     return Shape(CrossSection([points], fillrule=fill_rule))
+
+# get much cleaner surface for lower poly count using warp instead of twist
+def threads(d=8, h=8, pitch=1, depth_ratio=0.6, fn=0, pitch_fn=16, mesh_twist=40, lefty=False):
+    fn = fn or get_circular_segments(d/2)
+    d2 = d - depth_ratio * 2 * pitch
+    tw = -1 if lefty else 1
+    poly = circle(r=d/2, fn=fn)
+    solid = poly.extrude(h, fn=int(h/pitch*pitch_fn), twist=mesh_twist)
+    def warp(xyz):
+        x, y, z = xyz
+        tx = np.cos(z/pitch * 2*np.pi * tw)
+        ty = np.sin(z/pitch * 2*np.pi * tw)
+        c = (tx*x + ty*y) / np.sqrt(x*x+y*y)
+        c = np.arccos(c) / np.pi
+        s = 1 - (d-d2)/d * c
+        return x*s, y*s, z
+    return solid.warp(warp)
 
 
 set_circular_segments(64) # set default
