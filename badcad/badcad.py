@@ -464,22 +464,22 @@ def polygon(points, fill_rule='even_odd'):
         raise ValueError(f'{fill_rule=}')
     return Shape(CrossSection([points], fillrule=fill_rule))
 
-# get much cleaner surface for lower poly count using warp instead of twist
-def threads(d=8, h=8, pitch=1, depth_ratio=0.6, fn=0, pitch_fn=16, mesh_twist=40, lefty=False):
+
+def threads(d=8, h=8, pitch=1, depth_ratio=0.6, fn=0, pitch_fn=16, lefty=False):
     fn = fn or get_circular_segments(d/2)
     d2 = d - depth_ratio * 2 * pitch
     tw = -1 if lefty else 1
     poly = circle(r=d/2, fn=fn)
-    solid = poly.extrude(h, fn=int(h/pitch*pitch_fn), twist=mesh_twist)
+    solid = poly.extrude(h, fn=int(h/pitch*pitch_fn))
     def warp(xyz):
         x, y, z = xyz
         tx = np.cos(z/pitch * 2*np.pi * tw)
         ty = np.sin(z/pitch * 2*np.pi * tw)
-        c = (tx*x + ty*y) / np.sqrt(x*x+y*y)
+        c = (tx*x + ty*y) / np.sqrt(x*x + y*y)
         c = np.arccos(c) / np.pi
         s = 1 - (d-d2)/d * c
         return x*s, y*s, z
-    return solid.warp(warp)
+    return solid.warp(warp) 
 
 
 set_circular_segments(64) # set default

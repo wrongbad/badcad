@@ -31,12 +31,20 @@ p_big.extrude_to(p_lil, 1)
 
 ```py
 from badcad import *
-deathstar = sphere(r=1) - sphere(r=1).move(1,0,0)
+deathstar = sphere(r=1) - sphere(r=0.5).move(1.2,0,0)
 deathstar.to_stl('deathstar.stl')
 deathstar
 ```
 
 ![deathstar](deathstar.png)
+
+```py
+from badcad import *
+bolt = threads(d=8, h=16, pitch=1) 
+bolt + circle(r=5, fn=6).offset(1,'round').extrude(4).move(0,0,15)
+```
+
+![bolt](bolt.png)
 
 # vscode
 
