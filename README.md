@@ -8,6 +8,8 @@ most of the hard work is done by
 
 this project aims to focus on usability in a jupyter environment
 
+specifically for creating and exporting functional parts
+
 # setup
 
 ```bash

@@ -1,107 +1,7 @@
-import pythreejs
 import manifold3d
 from manifold3d import Manifold, CrossSection
 import numpy as np
-
-def triangle_normals(verts, tris):
-    a = verts[tris[:,1]] - verts[tris[:,0]]
-    b = verts[tris[:,2]] - verts[tris[:,1]]
-    tnormals = np.cross(a, b)
-    tnormals /= np.linalg.norm(tnormals, axis=-1, keepdims=True)
-    return tnormals
-
-# low level mesh preview - shared with Solid preview
-# can be helpful to debug backwards triangles and stuff
-def preview_raw(verts, tris):
-
-    box0 = np.min(verts, axis=0)
-    box1 = np.max(verts, axis=0)
-
-    sz = np.linalg.norm(box1-box0)
-    mid = (box0+box1)/2
-
-    verts = verts - mid
-    tnormals = triangle_normals(verts, tris)
-
-    vnormals = np.stack(
-        (tnormals, tnormals, tnormals), axis=1, dtype=np.float32)
-
-    verts3 = np.stack((
-            verts[tris[:,0]], verts[tris[:,1]], verts[tris[:,2]]
-        ), axis=1, dtype=np.float32)
-
-    index = np.arange(verts3.size // 3, dtype=np.uint32)
-    geometry = pythreejs.BufferGeometry(
-        attributes = dict(
-            position = pythreejs.BufferAttribute(verts3),
-            normal = pythreejs.BufferAttribute(vnormals),
-        ),
-        index = pythreejs.BufferAttribute(index)
-    )
-
-    material = pythreejs.MeshPhysicalMaterial(
-        color = '#aaaa22',
-        reflectivity = 0.8,
-        clearCoat = 0.5,
-        clearCoatRoughness = 0.4,
-    );
-
-    threemesh = pythreejs.Mesh(geometry, material)
-
-    lights = [
-        pythreejs.DirectionalLight(
-            color='white', 
-            position=[3, 5, 1], 
-            intensity=0.3
-        ),
-        pythreejs.DirectionalLight(
-            color='white', 
-            position=[0, 0, 3], 
-            intensity=0.3
-        ),
-        pythreejs.DirectionalLight(
-            color='white', 
-            position=[0, 6, 1], 
-            intensity=0.3
-        ),
-        pythreejs.DirectionalLight(
-            color='white', 
-            position=[3, 5, 1], 
-            intensity=0.3
-        )
-    ]
-
-    camera = pythreejs.PerspectiveCamera(
-        position=[0, 0, sz*1.3], 
-        up=[0, 1, 0], 
-        children=lights
-    )
-
-    controls = pythreejs.OrbitControls(
-        controlling=camera, 
-        rotateSpeed=0.5, 
-        zoomSpeed=0.5,
-        enableZoom=False,
-    )
-
-    scene = pythreejs.Scene(
-        children=[
-            threemesh, 
-            camera, 
-            pythreejs.AmbientLight(color='#aaa')
-        ], 
-        background=None
-    )
-
-    return pythreejs.Renderer(
-        camera=camera,
-        scene=scene,
-        alpha=True,
-        clearOpacity=0.2,
-        controls=[controls],
-        width=480, 
-        height=480
-    )
+from .preview import preview_raw, triangle_normals
 
 # given 2 polygons, find a list of index pairs
 # which walk the perimeters of both such that
@@ -167,8 +67,37 @@ class Solid:
     def as_original(self):
         return Solid(self.manifold.as_original())
 
+    def bounding_box(self):
+        return self.manifold.bounding_box
+
     def calculate_curvature(self, gaussian_idx: int, mean_idx: int):
         return Solid(self.manifold.calculate_curvature(gaussian_idx, mean_idx))
+
+    def align(self, 
+            xmin=None, x=None, xmax=None, 
+            ymin=None, y=None, ymax=None,
+            zmin=None, z=None, zmax=None):
+        x0, y0, z0, x1, y1, z1 = self.bounding_box()
+        dx, dy, dz = 0
+        if xmin is not None:
+            dx = xmin-x0
+        if x is not None:
+            dx = x-(x0+x1)/2
+        if xmax is not None:
+            dx = xmax-x1
+        if ymin is not None:
+            dy = ymin-y0
+        if y is not None:
+            dy = y-(y0+y1)/2
+        if ymax is not None:
+            dy = ymax-y1
+        if zmin is not None:
+            dz = zmin-z0
+        if z is not None:
+            dz = z-(z0+z1)/2
+        if zmax is not None:
+            dz = zmax-z1
+        return self.move(dx, dy, dz)
 
     def decompose(self):
         return [Solid(m) for m in self.manifold.decompose()]
@@ -250,9 +179,8 @@ class Solid:
     def warp(self, xyz_map_fn):
         return Solid(self.manifold.warp(xyz_map_fn))
 
-    def bounding_box(self):
-        xyz = self.manifold.bounding_box
-        return (xyz[:3], xyz[3:]) # 2 opposing corner coordinates
+    def warp_batch(self, xyz_map_fn):
+        return Solid(self.manifold.warp_batch(xyz_map_fn))
 
     def to_stl(self, fname=None):
         mesh = self.to_mesh()
@@ -300,6 +228,28 @@ class Shape:
     def area(self):
         return self.cross_section.area()
 
+    def bounds(self):
+        return self.cross_section.bounds()
+
+    def align(self, 
+            xmin=None, x=None, xmax=None, 
+            ymin=None, y=None, ymax=None):
+        x0, y0, x1, y1 = self.bounds()
+        dx, dy = 0, 0
+        if xmin is not None:
+            dx = xmin-x0
+        if x is not None:
+            dx = x-(x0+x1)/2
+        if xmax is not None:
+            dx = xmax-x1
+        if ymin is not None:
+            dy = ymin-y0
+        if y is not None:
+            dy = y-(y0+y1)/2
+        if ymax is not None:
+            dy = ymax-y1
+        return self.move(dx, dy)
+
     def decompose(self):
         return [Shape(p) for p in self.cross_section.decompose()]
 
@@ -312,19 +262,23 @@ class Shape:
         ))
     
     def extrude_to(self, other, height):
-        verts1 = np.array(self.cross_section.to_polygons()[0])
-        verts1 = np.pad(verts1, [[0,0],[0,1]], constant_values=0)
+        polys1 = self.to_polygons()
+        assert len(polys1) == 1, 'extrude_to only supports simple polygons'
+        verts1 = np.pad(polys1[0], [[0,0],[0,1]], constant_values=0)
         N1 = verts1.shape[0]
         
-        verts2 = np.array(other.cross_section.to_polygons()[0])
-        verts2 = np.pad(verts2, [[0,0],[0,1]], constant_values=height)
+        polys2 = other.to_polygons()
+        assert len(polys2) == 1, 'extrude_to only supports simple polygons'
+        verts2 = np.pad(polys2[0], [[0,0],[0,1]], constant_values=height)
 
         # flip the bottom over
-        tris1 = np.array(self.cross_section.triangulate())
-        tris1[:, 2], tris1[:, 1] = tris1[:, 1].copy(), tris1[:, 2].copy()
+        tris1 = manifold3d.triangulate(polys1)
+        tmp = tris1[:, 1].copy()
+        tris1[:, 1] = tris1[:, 2]
+        tris1[:, 2] = tmp
 
         # offset top vertex indices
-        tris2 = np.array(other.cross_section.triangulate())
+        tris2 = manifold3d.triangulate(polys2)
         tris2 += N1
 
         alignment = polygon_nearest_alignment(verts1, verts2)
@@ -401,6 +355,9 @@ class Shape:
     def warp(self, xy_map_func):
         return Shape(self.cross_section.warp(xy_map_func))
 
+    def warp_batch(self, xy_map_func):
+        return Shape(self.cross_section.warp_batch(xy_map_func))
+
 
     
 
@@ -442,10 +399,12 @@ def conic(h=1, d1=1, d2=1, r1=None, r2=None, center=False, fn=0):
     return Solid(Manifold.cylinder(
         h, r1, r2, circular_segments=fn, center=center))
 
-def sphere(r=1, fn=0):
+def sphere(d=1, r=None, fn=0):
+    r = r or d/2
     return Solid(Manifold.sphere(r, fn))
 
-def circle(r=1, fn=0):
+def circle(d=1, r=None, fn=0):
+    r = r or d/2
     return Shape(CrossSection.circle(r, fn))
 
 def square(x=1, y=1, center=False):
