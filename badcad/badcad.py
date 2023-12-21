@@ -68,7 +68,7 @@ class Solid:
         return Solid(self.manifold.as_original())
 
     def bounding_box(self):
-        return self.manifold.bounding_box
+        return self.manifold.bounding_box()
 
     def calculate_curvature(self, gaussian_idx: int, mean_idx: int):
         return Solid(self.manifold.calculate_curvature(gaussian_idx, mean_idx))
@@ -78,7 +78,7 @@ class Solid:
             ymin=None, y=None, ymax=None,
             zmin=None, z=None, zmax=None):
         x0, y0, z0, x1, y1, z1 = self.bounding_box()
-        dx, dy, dz = 0
+        dx, dy, dz = 0, 0, 0
         if xmin is not None:
             dx = xmin-x0
         if x is not None:
@@ -117,7 +117,7 @@ class Solid:
     def is_empty(self):
         return self.manifold.is_empty()
 
-    def mirror(self, x, y, z):
+    def mirror(self, x=0, y=0, z=0):
         return Solid(self.manifold.mirror((x, y, z)))
 
     def num_edge(self):
@@ -145,7 +145,7 @@ class Solid:
         return Solid(self.manifold.refine(n))
 
     def rotate(self, x=0, y=0, z=0):
-        return Solid(self.manifold.rotate(x, y, z))
+        return Solid(self.manifold.rotate((x, y, z)))
     
     def scale(self, x=1, y=1, z=1):
         return Solid(self.manifold.scale((x, y, z)))
@@ -164,14 +164,14 @@ class Solid:
     def status(self):
         return self.manifold.status
 
-    def to_mesh(self, normal_idx=None):
+    def to_mesh(self, normal_idx=[0,0,0]):
         return self.manifold.to_mesh(normal_idx)
     
     def transform(self, matrix):
         return Solid(self.manifold.transform(matrix))
 
     def move(self, x=0, y=0, z=0):
-        return Solid(self.manifold.translate(x,y,z))
+        return Solid(self.manifold.translate((x,y,z)))
     
     def trim_by_plane(self, x=0, y=0, z=0, offset=0):
         return Solid(self.manifold.trim_by_plane((x, y, z), offset))
@@ -182,7 +182,7 @@ class Solid:
     def warp_batch(self, xyz_map_fn):
         return Solid(self.manifold.warp_batch(xyz_map_fn))
 
-    def to_stl(self, fname=None):
+    def stl(self, fname=None):
         mesh = self.to_mesh()
         tris = mesh.tri_verts.astype(np.uint32)
         verts = mesh.vert_properties.astype(np.float32)
@@ -306,7 +306,7 @@ class Shape:
     def is_empty(self):
         return self.cross_section.is_empty()
 
-    def mirror(self, x, y):
+    def mirror(self, x=0, y=0):
         return Shape(self.cross_section.mirror((x, y)))
 
     def num_contour(self):
@@ -328,9 +328,9 @@ class Shape:
             delta, join_type, miter_limit, circular_segments
         ))
 
-    def revolve(self, z=360, circular_segments=0):
+    def revolve(self, z=360, fn=0):
         return Solid(self.cross_section.revolve(
-            circular_segments=circular_segments,
+            circular_segments=fn,
             revolve_degrees=z,
         ))
 
@@ -378,34 +378,43 @@ def hull(*solids):
     mans = [s.manifold for s in solids]
     return Solid(Manifold.batch_hull(mans))
 
+def hull_points(points):
+    return Shape(Manifold.hull_points(points))
+
 def hull2d(*shapes):
     sects = [s.cross_section for s in shapes]
     return Shape(CrossSection.batch_hull(sects))
 
-def hull2d_points(xy_tuples):
-    return Shape(CrossSection.hull_points(xy_tuples))
+def hull2d_points(points):
+    return Shape(CrossSection.hull_points(points))
 
 def cube(x=1, y=1, z=1, center=False):
-    return Solid(Manifold.cube(x, y, z, center=center))
+    return Solid(Manifold.cube((x, y, z), center=center))
 
-def cylinder(h=1, d=1, r=None, center=False, fn=0):
+def cylinder(h=1, d=1, r=None, center=False, fn=0, outer=False):
     r = r or d/2
+    fn = fn or get_circular_segments(r)
+    s = 1/np.cos(np.pi/fn) if outer else 1
     return Solid(Manifold.cylinder(
-        h, r, r, circular_segments=fn, center=center))
+        h, r*s, r*s, circular_segments=fn, center=center))
 
-def conic(h=1, d1=1, d2=1, r1=None, r2=None, center=False, fn=0):
+def conic(h=1, d1=1, d2=1, r1=None, r2=None, center=False, fn=0, outer=False):
     r1 = r1 or d1/2
     r2 = r2 or d2/2
+    fn = fn or get_circular_segments(r)
+    s = 1/np.cos(np.pi/fn) if outer else 1
     return Solid(Manifold.cylinder(
-        h, r1, r2, circular_segments=fn, center=center))
+        h, r1*s, r2*s, circular_segments=fn, center=center))
 
 def sphere(d=1, r=None, fn=0):
     r = r or d/2
     return Solid(Manifold.sphere(r, fn))
 
-def circle(d=1, r=None, fn=0):
+def circle(d=1, r=None, fn=0, outer=False):
     r = r or d/2
-    return Shape(CrossSection.circle(r, fn))
+    fn = fn or get_circular_segments(r)
+    s = 1/np.cos(np.pi/fn) if outer else 1
+    return Shape(CrossSection.circle(r*s, fn))
 
 def square(x=1, y=1, center=False):
     return Shape(CrossSection.square((x, y), center=center))
@@ -423,22 +432,22 @@ def polygon(points, fill_rule='even_odd'):
         raise ValueError(f'{fill_rule=}')
     return Shape(CrossSection([points], fillrule=fill_rule))
 
-
-def threads(d=8, h=8, pitch=1, depth_ratio=0.6, fn=0, pitch_fn=16, lefty=False):
+def threads(d=8, h=8, pitch=1, depth_ratio=0.6, fn=0, pitch_fn=8, lefty=False):
     fn = fn or get_circular_segments(d/2)
     d2 = d - depth_ratio * 2 * pitch
     tw = -1 if lefty else 1
     poly = circle(r=d/2, fn=fn)
     solid = poly.extrude(h, fn=int(h/pitch*pitch_fn))
-    def warp(xyz):
-        x, y, z = xyz
+    def warp(pts):
+        x, y, z = pts[:,0], pts[:,1], pts[:,2]
         tx = np.cos(z/pitch * 2*np.pi * tw)
         ty = np.sin(z/pitch * 2*np.pi * tw)
         c = (tx*x + ty*y) / np.sqrt(x*x + y*y)
-        c = np.arccos(c) / np.pi
+        c = np.arccos(np.clip(c, -1, 1)) / np.pi
         s = 1 - (d-d2)/d * c
-        return x*s, y*s, z
-    return solid.warp(warp) 
+        x *= s; y *= s
+        return pts
+    return solid.warp_batch(warp)
 
 
 set_circular_segments(64) # set default

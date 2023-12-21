@@ -13,9 +13,7 @@ specifically for creating and exporting functional parts
 # setup
 
 ```bash
-# temporary until changes make it upstream
-pip install git+https://github.com/wrongbad/manifold.git@develop
-
+pip install git+https://github.com/elalish/manifold.git
 pip install git+https://github.com/wrongbad/badcad.git
 ```
 
@@ -48,10 +46,12 @@ bolt + circle(r=5, fn=6).offset(1,'round').extrude(4).move(0,0,15)
 
 ![bolt](bolt.png)
 
-# vscode
+# interesting functions
 
-to remove ugly white padding in vs-code jupyter, add a cell like this 
-```html
-%%html
-<style> .cell-output-ipywidget-background { background-color: transparent !important; } </style>
+```
+`Shape.extrude_to()` - automatically find min-distance alignment between two polygons and create 3d extrusion from one to the other
+
+`threads()` - generate screw threads
+
+`Shape.align()`, `Solid.align()` - use bounding box to align center, min, or max to given location, per axis
 ```
