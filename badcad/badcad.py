@@ -1,30 +1,11 @@
 import manifold3d
 from manifold3d import Manifold, CrossSection
 import numpy as np
-from .preview import preview_raw, triangle_normals
-
-# given 2 polygons, find a list of index pairs
-# which walk the perimeters of both such that
-# distance between each pair is minimized
-def polygon_nearest_alignment(va, vb):
-    dist = lambda x: np.sum(x ** 2, axis=-1)
-    j0 = np.argmin(dist(vb - va[0]))
-    i, j = 0, j0
-    na, nb = len(va), len(vb)
-    out = []
-    while True:
-        ip1, jp1 = (i+1)%na, (j+1)%nb
-        d0 = dist(va[ip1] - vb[j])
-        d1 = dist(va[i] - vb[jp1])
-        if d0 < d1:
-            out += [[ip1, j]]
-            i = ip1
-        else:
-            out += [[i, jp1]]
-            j = jp1
-        if (i,j) == (0, j0):
-            break
-    return out
+from .utils import (
+    preview_raw, 
+    triangle_normals, 
+    polygon_nearest_alignment
+)
 
 # wrapper for Manifold
 # adds jupyter preview & tweaks API
@@ -35,23 +16,12 @@ class Solid:
     # TODO add visual properties (e.g. color, texture)
 
     def _repr_mimebundle_(self, **kwargs):
-        # called by jupyter to figure out how to display this object
-        # we create a scene on the fly with ability to customize 
-        # controls and lights, etc.
-
         if self.is_empty():
             return None
-
-        # box = self.bounding_box()
-        # sz = max(b-a for a,b in zip(*box))
-        # mid = np.array([(a+b)/2 for a,b in zip(*box)], dtype=np.float32)
         raw_mesh = self.to_mesh()
-
         verts = raw_mesh.vert_properties.astype(np.float32)
         tris = raw_mesh.tri_verts.astype(np.uint32)
-
         renderer = preview_raw(verts, tris)
-
         return renderer._repr_mimebundle_(**kwargs)
 
     def __add__(self, other):
@@ -79,24 +49,15 @@ class Solid:
             zmin=None, z=None, zmax=None):
         x0, y0, z0, x1, y1, z1 = self.bounding_box()
         dx, dy, dz = 0, 0, 0
-        if xmin is not None:
-            dx = xmin-x0
-        if x is not None:
-            dx = x-(x0+x1)/2
-        if xmax is not None:
-            dx = xmax-x1
-        if ymin is not None:
-            dy = ymin-y0
-        if y is not None:
-            dy = y-(y0+y1)/2
-        if ymax is not None:
-            dy = ymax-y1
-        if zmin is not None:
-            dz = zmin-z0
-        if z is not None:
-            dz = z-(z0+z1)/2
-        if zmax is not None:
-            dz = zmax-z1
+        if xmin is not None: dx = xmin-x0
+        if x is not None: dx = x-(x0+x1)/2
+        if xmax is not None: dx = xmax-x1
+        if ymin is not None: dy = ymin-y0
+        if y is not None: dy = y-(y0+y1)/2
+        if ymax is not None: dy = ymax-y1
+        if zmin is not None: dz = zmin-z0
+        if z is not None: dz = z-(z0+z1)/2
+        if zmax is not None: dz = zmax-z1
         return self.move(dx, dy, dz)
 
     def decompose(self):
@@ -236,18 +197,12 @@ class Shape:
             ymin=None, y=None, ymax=None):
         x0, y0, x1, y1 = self.bounds()
         dx, dy = 0, 0
-        if xmin is not None:
-            dx = xmin-x0
-        if x is not None:
-            dx = x-(x0+x1)/2
-        if xmax is not None:
-            dx = xmax-x1
-        if ymin is not None:
-            dy = ymin-y0
-        if y is not None:
-            dy = y-(y0+y1)/2
-        if ymax is not None:
-            dy = ymax-y1
+        if xmin is not None: dx = xmin-x0
+        if x is not None: dx = x-(x0+x1)/2
+        if xmax is not None: dx = xmax-x1
+        if ymin is not None: dy = ymin-y0
+        if y is not None: dy = y-(y0+y1)/2
+        if ymax is not None: dy = ymax-y1
         return self.move(dx, dy)
 
     def decompose(self):
@@ -357,8 +312,6 @@ class Shape:
 
     def warp_batch(self, xy_map_func):
         return Shape(self.cross_section.warp_batch(xy_map_func))
-
-
     
 
 

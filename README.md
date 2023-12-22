@@ -48,10 +48,20 @@ bolt + circle(r=5, fn=6).offset(1,'round').extrude(4).move(0,0,15)
 
 # interesting functions
 
-```
 `Shape.extrude_to()` - automatically find min-distance alignment between two polygons and create 3d extrusion from one to the other
 
 `threads()` - generate screw threads
 
 `Shape.align()`, `Solid.align()` - use bounding box to align center, min, or max to given location, per axis
-```
+
+# motivation
+
+1. to escape the openscad language syntax - boolean ops wrapping and nesting args is an editing nightmare compared to `A + B - C` syntax
+
+2. to escape openscad render times - manifold lib is 1000x faster for high-poly mesh ops
+
+3. to enable easier prototyping of mesh algorithms in the CAD environment
+
+# api documentation
+
+[badcad.py](badcad/badcad.py) - no joke, it's compact and readable
