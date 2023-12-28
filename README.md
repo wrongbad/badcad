@@ -62,6 +62,6 @@ bolt + circle(r=5, fn=6).offset(1,'round').extrude(4).move(0,0,15)
 
 3. to enable easier prototyping of mesh algorithms in the CAD environment
 
-# api documentation
+# all available functions
 
-[badcad.py](badcad/badcad.py) - no joke, it's compact and readable
+[badcad.py](badcad/badcad.py)

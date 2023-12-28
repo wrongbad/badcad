@@ -159,6 +159,6 @@ def preview_raw(verts, tris):
         alpha=True,
         clearOpacity=0.2,
         controls=[controls],
-        width=480, 
-        height=480
+        width=640, 
+        height=640
     )

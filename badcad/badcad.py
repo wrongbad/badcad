@@ -10,7 +10,7 @@ from .utils import (
 # wrapper for Manifold
 # adds jupyter preview & tweaks API
 class Solid:
-    def __init__(self, manifold: Manifold):
+    def __init__(self, manifold = Manifold()):
         self.manifold = manifold
 
     # TODO add visual properties (e.g. color, texture)
@@ -72,8 +72,8 @@ class Solid:
     def get_volume(self):
         return self.manifold.get_volume()
 
-    def hull(self):
-        return Solid(self.manifold.hull())
+    def hull(self, *others):
+        return Solid(Manifold.batch_hull([self.manifold, *[o.manifold for o in others]]))
 
     def is_empty(self):
         return self.manifold.is_empty()
@@ -119,7 +119,7 @@ class Solid:
         return Solid(inter), Solid(diff)
 
     def split_by_plane(self, x=0, y=0, z=0, offset=0):
-        top, bottom = self.manifold.split((x, y, z), offset)
+        top, bottom = self.manifold.split_by_plane((x, y, z), offset)
         return Solid(top), Solid(bottom)
 
     def status(self):
@@ -160,13 +160,14 @@ class Solid:
         if fname:
             with open(fname, 'wb') as f:
                 f.write(binary)
+            return self
         else:
             return binary
 
 
 
 class Shape:
-    def __init__(self, cross_section: CrossSection):
+    def __init__(self, cross_section = CrossSection()):
         self.cross_section = cross_section
 
     def _repr_mimebundle_(self, **kwargs):
@@ -208,15 +209,16 @@ class Shape:
     def decompose(self):
         return [Shape(p) for p in self.cross_section.decompose()]
 
-    def extrude(self, height, fn=0, twist=0, scale_top=(1,1)):
-        return Solid(self.cross_section.extrude(
+    def extrude(self, height, fn=0, twist=0, scale_top=(1,1), center=False):
+        s = Solid(self.cross_section.extrude(
             height,
             n_divisions=fn,
             twist_degrees=twist,
             scale_top=scale_top,
         ))
+        return s.move(z=-height/2) if center else s
     
-    def extrude_to(self, other, height):
+    def extrude_to(self, other, height, center=False):
         polys1 = self.to_polygons()
         assert len(polys1) == 1, 'extrude_to only supports simple polygons'
         verts1 = np.pad(polys1[0], [[0,0],[0,1]], constant_values=0)
@@ -253,10 +255,11 @@ class Shape:
         verts = np.concatenate((verts1, verts2))
         tris = np.concatenate((tris1, tris2, tris3))
         mesh = manifold3d.Mesh(verts, tris)
-        return Solid(Manifold.from_mesh(mesh))
+        s = Solid(Manifold(mesh))
+        return s.move(z=-height/2) if center else s
     
-    def hull(self):
-        return Shape(self.cross_section.hull())
+    def hull(self, *others):
+        return Shape(CrossSection.batch_hull([self.cross_section, *[o.cross_section for o in others]]))
     
     def is_empty(self):
         return self.cross_section.is_empty()
