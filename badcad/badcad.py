@@ -394,22 +394,23 @@ def text(t, size=10, font="Helvetica"):
     polys = svg2polygons(text2svg(t, size=size, font=font))
     return Shape(CrossSection(polys)).mirror(y=1)
 
-def threads(d=8, h=8, pitch=1, depth_ratio=0.6, fn=0, pitch_fn=8, lefty=False):
+def threads(d=8, h=8, pitch=1, depth_ratio=0.6, trap_scale=1, starts=1, fn=0, pitch_fn=8, lefty=False):
     fn = fn or get_circular_segments(d/2)
     d2 = d - depth_ratio * 2 * pitch
-    tw = -1 if lefty else 1
     poly = circle(r=d/2, fn=fn)
     solid = poly.extrude(h, fn=int(h/pitch*pitch_fn))
     def warp(pts):
         x, y, z = pts[:,0], pts[:,1], pts[:,2]
-        tx = np.cos(z/pitch * 2*np.pi * tw)
-        ty = np.sin(z/pitch * 2*np.pi * tw)
-        c = (tx*x + ty*y) / np.sqrt(x*x + y*y)
-        c = np.arccos(np.clip(c, -1, 1)) / np.pi
+        tz = -z / pitch / starts
+        txy = np.arctan2(y, x) / (2*np.pi)
+        c = (txy - tz) * starts % 1
+        c = np.abs(c - 0.5) * 2
+        if trap_scale > 1:
+            c = np.clip(0.5 + (c-0.5) * trap_scale, 0, 1)
         s = 1 - (d-d2)/d * c
         x *= s; y *= s
         return pts
-    return solid.warp_batch(warp)
-
+    m = solid.warp_batch(warp)
+    return m if lefty else m.mirror(x=1)
 
 set_circular_segments(64) # set default
