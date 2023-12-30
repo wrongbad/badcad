@@ -29,7 +29,7 @@ p_big = plus.offset(+0.4, 'round')
 p_big.extrude_to(p_lil, 1)
 ```
 
-![plus](plus.png)
+![plus](img/plus.png)
 
 ```py
 from badcad import *
@@ -38,7 +38,7 @@ deathstar.to_stl('deathstar.stl')
 deathstar
 ```
 
-![deathstar](deathstar.png)
+![deathstar](img/deathstar.png)
 
 ```py
 from badcad import *
@@ -46,7 +46,7 @@ bolt = threads(d=8, h=16, pitch=1)
 bolt + circle(r=5, fn=6).offset(1,'round').extrude(4).move(0,0,15)
 ```
 
-![bolt](bolt.png)
+![bolt](img/bolt.png)
 
 ```py
 from badcad import *
@@ -54,7 +54,7 @@ t = text('yo', font='monospace')
 t.offset(1,'round').extrude(2) - t.extrude(2)
 ```
 
-![txt](txt.png)
+![txt](img/txt.png)
 
 # interesting functions
 
