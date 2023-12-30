@@ -2,9 +2,11 @@ import manifold3d
 from manifold3d import Manifold, CrossSection
 import numpy as np
 from .utils import (
-    preview_raw, 
+    display, 
     triangle_normals, 
-    polygon_nearest_alignment
+    polygon_nearest_alignment,
+    svg2polygons,
+    text2svg
 )
 
 # wrapper for Manifold
@@ -21,7 +23,7 @@ class Solid:
         raw_mesh = self.to_mesh()
         verts = raw_mesh.vert_properties.astype(np.float32)
         tris = raw_mesh.tri_verts.astype(np.uint32)
-        renderer = preview_raw(verts, tris)
+        renderer = display((verts, tris))
         return renderer._repr_mimebundle_(**kwargs)
 
     def __add__(self, other):
@@ -387,6 +389,10 @@ def polygon(points, fill_rule='even_odd'):
     else:
         raise ValueError(f'{fill_rule=}')
     return Shape(CrossSection([points], fillrule=fill_rule))
+
+def text(t, size=10, font="Helvetica"):
+    polys = svg2polygons(text2svg(t, size=size, font=font))
+    return Shape(CrossSection(polys)).mirror(y=1)
 
 def threads(d=8, h=8, pitch=1, depth_ratio=0.6, fn=0, pitch_fn=8, lefty=False):
     fn = fn or get_circular_segments(d/2)

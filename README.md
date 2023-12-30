@@ -15,6 +15,8 @@ specifically for creating and exporting functional parts
 ```bash
 pip install git+https://github.com/elalish/manifold.git
 pip install git+https://github.com/wrongbad/badcad.git
+# optional dependencies (text + svg support)
+pip install pycairo svgelements
 ```
 
 # example
@@ -46,6 +48,14 @@ bolt + circle(r=5, fn=6).offset(1,'round').extrude(4).move(0,0,15)
 
 ![bolt](bolt.png)
 
+```py
+from badcad import *
+t = text('yo', font='monospace')
+t.offset(1,'round').extrude(2) - t.extrude(2)
+```
+
+![txt](txt.png)
+
 # interesting functions
 
 `Shape.extrude_to()` - automatically find min-distance alignment between two polygons and create 3d extrusion from one to the other
@@ -56,12 +66,8 @@ bolt + circle(r=5, fn=6).offset(1,'round').extrude(4).move(0,0,15)
 
 # motivation
 
-1. to escape the openscad language syntax - boolean ops wrapping and nesting args is an editing nightmare compared to `A + B - C` syntax
+to escape openscad syntax - op wrapping and nesting is an editing nightmare compared to `A + B.move(...) - C` style
 
-2. to escape openscad render times - manifold lib is 1000x faster for high-poly mesh ops
+to escape openscad render times - manifold lib is 1000x faster for high-poly boolean ops
 
-3. to enable easier prototyping of mesh algorithms in the CAD environment
-
-# all available functions
-
-[badcad.py](badcad/badcad.py)
+to enable easier prototyping of mesh algorithms in the CAD environment
