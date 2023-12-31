@@ -117,7 +117,7 @@ def text2svg(text, size=10, font="Helvetica"):
     return memfile.getvalue()
 
 
-def svg2polygons(svg):
+def svg2polygons(svg, fn=8):
     import svgelements
     # this lib handles transforms and `use` tags
     svg = svgelements.SVG.parse(BytesIO(svg))
@@ -125,7 +125,7 @@ def svg2polygons(svg):
     for e in svg.elements():
         if isinstance(e, svgelements.Path):
             # TODO policy for unclosed paths
-            p = PolyPath()
+            p = PolyPath(fn=fn)
             for s in e.segments():
                 if isinstance(s, svgelements.Move):
                     p.move(s.end)

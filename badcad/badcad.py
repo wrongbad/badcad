@@ -6,7 +6,8 @@ from .utils import (
     triangle_normals, 
     polygon_nearest_alignment,
     svg2polygons,
-    text2svg
+    text2svg,
+    PolyPath
 )
 
 # wrapper for Manifold
@@ -144,6 +145,39 @@ class Solid:
 
     def warp_batch(self, xyz_map_fn):
         return Solid(self.manifold.warp_batch(xyz_map_fn))
+
+    def refine_to_length(self, edge_len):
+        m = self.manifold.to_mesh()
+        verts = m.vert_properties.tolist()
+        tris = m.tri_verts.tolist()
+        mids = {}
+        i = 0
+        while i < len(tris):
+            tri = tris[i]
+            v = [verts[i] for i in tri]
+            dv = v - np.roll(v, 1, 0)
+            lens = np.linalg.norm(dv, axis=-1)
+            mi = np.argmax(lens)
+            if lens[mi] > edge_len:
+                key = (min(tri[mi],tri[mi-1]), max(tri[mi],tri[mi-1]))
+                if key not in mids:
+                    mididx = len(verts)
+                    midv = [(v[mi][j] + v[mi-1][j])/2 for j in [0,1,2]]
+                    verts += [midv]
+                    mids[key] = mididx
+                else:
+                    mididx = mids[key]
+                tri2 = [*tri]
+                tri2[mi-1] = mididx
+                tris += [tri2]
+                tri[mi] = mididx
+            else:
+                i += 1
+
+        verts = np.array(verts, np.float32)
+        tris = np.array(tris, np.int32)
+        m = manifold3d.Mesh(verts, tris, face_id=np.arange(len(tris)))
+        return Solid(Manifold(m))
 
     def stl(self, fname=None):
         mesh = self.to_mesh()
@@ -359,7 +393,7 @@ def cylinder(h=1, d=1, r=None, center=False, fn=0, outer=False):
 def conic(h=1, d1=1, d2=1, r1=None, r2=None, center=False, fn=0, outer=False):
     r1 = r1 or d1/2
     r2 = r2 or d2/2
-    fn = fn or get_circular_segments(r)
+    fn = fn or get_circular_segments(max(r1,r2))
     s = 1/np.cos(np.pi/fn) if outer else 1
     return Solid(Manifold.cylinder(
         h, r1*s, r2*s, circular_segments=fn, center=center))
@@ -390,8 +424,8 @@ def polygon(points, fill_rule='even_odd'):
         raise ValueError(f'{fill_rule=}')
     return Shape(CrossSection([points], fillrule=fill_rule))
 
-def text(t, size=10, font="Helvetica"):
-    polys = svg2polygons(text2svg(t, size=size, font=font))
+def text(t, size=10, font="Helvetica", fn=8):
+    polys = svg2polygons(text2svg(t, size=size, font=font), fn=fn)
     return Shape(CrossSection(polys)).mirror(y=1)
 
 def threads(d=8, h=8, pitch=1, depth_ratio=0.6, trap_scale=1, starts=1, fn=0, pitch_fn=8, lefty=False):
