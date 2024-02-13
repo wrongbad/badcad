@@ -1,5 +1,5 @@
 import manifold3d
-from manifold3d import Manifold, CrossSection
+from manifold3d import Manifold, CrossSection, Mesh
 import numpy as np
 from .utils import (
     display, 
@@ -9,6 +9,9 @@ from .utils import (
     text2svg,
     PolyPath
 )
+
+
+stl_dtype = np.dtype([('norm',np.float32,3),('vert',np.float32,9),('pad',np.int8,2)])
 
 # wrapper for Manifold
 # adds jupyter preview & tweaks API
@@ -126,7 +129,7 @@ class Solid:
         return Solid(top), Solid(bottom)
 
     def status(self):
-        return self.manifold.status
+        return self.manifold.status()
 
     def to_mesh(self, normal_idx=[0,0,0]):
         return self.manifold.to_mesh(normal_idx)
@@ -179,27 +182,30 @@ class Solid:
         m = manifold3d.Mesh(verts, tris, face_id=np.arange(len(tris)))
         return Solid(Manifold(m))
 
-    def stl(self, fname=None):
+    # this requires experimental fork of manifold3d 
+    # def minkowski_sum(self, other):
+    #     return Solid(self.manifold.minkowski_sum(other.manifold))
+
+    # def minkowski_difference(self, other):
+    #     return Solid(self.manifold.minkowski_difference(other.manifold))
+
+    def stl(self, filename=None):
         mesh = self.to_mesh()
-        tris = mesh.tri_verts.astype(np.uint32)
-        verts = mesh.vert_properties.astype(np.float32)
-        tnormals = triangle_normals(verts, tris)
-        ntris = tris.shape[0]
+        tris = mesh.tri_verts
+        verts = mesh.vert_properties
+
         header = np.zeros(21, dtype=np.uint32)
-        header[20] = ntris
-        body = np.zeros((ntris, 50), dtype=np.uint8)
-        body[:, 0:12] = tnormals.view(np.uint8)
-        body[:, 12:24] = verts[tris[:,0]].view(np.int8)
-        body[:, 24:36] = verts[tris[:,1]].view(np.int8)
-        body[:, 36:48] = verts[tris[:,2]].view(np.int8)
+        header[20] = tris.shape[0]
+        body = np.zeros(tris.shape[0], stl_dtype)
+        body['norm'] = triangle_normals(verts, tris)
+        body['vert'] = verts[tris].reshape(-1, 9)
         binary = header.tobytes() + body.tobytes()
-        if fname:
-            with open(fname, 'wb') as f:
+        if filename:
+            with open(filename, 'wb') as f:
                 f.write(binary)
             return self
         else:
             return binary
-
 
 
 class Shape:
@@ -387,16 +393,18 @@ def cylinder(h=1, d=1, r=None, center=False, fn=0, outer=False):
     r = r or d/2
     fn = fn or get_circular_segments(r)
     s = 1/np.cos(np.pi/fn) if outer else 1
+    a = 180/fn if outer else 0
     return Solid(Manifold.cylinder(
-        h, r*s, r*s, circular_segments=fn, center=center))
+        h, r*s, r*s, circular_segments=fn, center=center)).rotate(z=a)
 
 def conic(h=1, d1=1, d2=1, r1=None, r2=None, center=False, fn=0, outer=False):
     r1 = r1 or d1/2
     r2 = r2 or d2/2
     fn = fn or get_circular_segments(max(r1,r2))
     s = 1/np.cos(np.pi/fn) if outer else 1
+    a = 180/fn if outer else 0
     return Solid(Manifold.cylinder(
-        h, r1*s, r2*s, circular_segments=fn, center=center))
+        h, r1*s, r2*s, circular_segments=fn, center=center)).rotate(z=a)
 
 def sphere(d=1, r=None, fn=0):
     r = r or d/2
@@ -406,7 +414,8 @@ def circle(d=1, r=None, fn=0, outer=False):
     r = r or d/2
     fn = fn or get_circular_segments(r)
     s = 1/np.cos(np.pi/fn) if outer else 1
-    return Shape(CrossSection.circle(r*s, fn))
+    a = 180/fn if outer else 0
+    return Shape(CrossSection.circle(r*s, fn).rotate(a))
 
 def square(x=1, y=1, center=False):
     return Shape(CrossSection.square((x, y), center=center))
@@ -426,7 +435,7 @@ def polygon(points, fill_rule='even_odd'):
 
 def text(t, size=10, font="Helvetica", fn=8):
     polys = svg2polygons(text2svg(t, size=size, font=font), fn=fn)
-    return Shape(CrossSection(polys)).mirror(y=1)
+    return Shape(CrossSection(polys, fillrule=manifold3d.FillRule.EvenOdd)).mirror(y=1)
 
 def threads(d=8, h=8, pitch=1, depth_ratio=0.6, trap_scale=1, starts=1, fn=0, pitch_fn=8, lefty=False):
     fn = fn or get_circular_segments(d/2)
@@ -446,5 +455,17 @@ def threads(d=8, h=8, pitch=1, depth_ratio=0.6, trap_scale=1, starts=1, fn=0, pi
         return pts
     m = solid.warp_batch(warp)
     return m if lefty else m.mirror(x=1)
+
+
+def load_stl(filename=None, data=None):
+    if data is None:
+        with open(filename, 'rb') as f:
+            data = f.read()
+    data = np.frombuffer(data[84:], stl_dtype)
+    verts = data['vert'].reshape(-1,3)
+    idx = np.arange(verts.shape[0]).reshape(-1,3)
+    m = Mesh(verts, idx)
+    m.merge()
+    return Solid(Manifold(m))
 
 set_circular_segments(64) # set default

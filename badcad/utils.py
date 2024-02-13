@@ -223,7 +223,7 @@ def display(thing,
         controlling=camera, 
         rotateSpeed=1.0, 
         zoomSpeed=0.5,
-        enableZoom=False, # avoid notbook scroll conflict
+        # enableZoom=False, # avoid notbook scroll conflict
     )
 
     scene = pythreejs.Scene(
