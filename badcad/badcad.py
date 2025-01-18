@@ -1,15 +1,12 @@
 import manifold3d
 from manifold3d import Manifold, CrossSection, Mesh
 import numpy as np
-from .utils import (
-    display, 
-    triangle_normals, 
-    polygon_nearest_alignment,
-    svg2polygons,
-    text2svg,
-    PolyPath
-)
-
+from .display import display
+from .normals import triangle_normals
+from .loft import polygon_nearest_alignment
+from .path import PolyPath
+from .text import text2svg
+from .svg import svg2polygons
 
 stl_dtype = np.dtype([('norm',np.float32,3),('vert',np.float32,9),('pad',np.int8,2)])
 
@@ -131,7 +128,7 @@ class Solid:
     def status(self):
         return self.manifold.status()
 
-    def to_mesh(self, normal_idx=[0,0,0]):
+    def to_mesh(self, normal_idx=-1):
         return self.manifold.to_mesh(normal_idx)
     
     def transform(self, matrix):
@@ -300,6 +297,21 @@ class Shape:
         s = Solid(Manifold(mesh))
         return s.move(z=-height/2) if center else s
     
+    def refine_to_length(self, l):
+        def refine_poly(p, l):
+            pts = []
+            for i in range(0, len(p)):
+                d = np.linalg.norm(p[i] - p[i-1])
+                n = max(1, int(np.ceil(d / l)))
+                for j in range(1,n):
+                    lerp = p[i-1] * (n-j) / n
+                    lerp += p[i] * j / n
+                    pts += [lerp]
+                pts += [p[i]]
+            return np.stack(pts, axis=0)
+        polys = [refine_poly(p, l) for p in self.to_polygons()]
+        return Shape(CrossSection(polys))
+
     def hull(self, *others):
         return Shape(CrossSection.batch_hull([self.cross_section, *[o.cross_section for o in others]]))
     
@@ -432,6 +444,9 @@ def polygon(points, fill_rule='even_odd'):
     else:
         raise ValueError(f'{fill_rule=}')
     return Shape(CrossSection([points], fillrule=fill_rule))
+
+def cross_section(solid, z=0):
+    return Shape(solid.manifold.slice(z))
 
 def text(t, size=10, font="Helvetica", fn=8):
     polys = svg2polygons(text2svg(t, size=size, font=font), fn=fn)

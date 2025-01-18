@@ -13,7 +13,6 @@ specifically for creating and exporting functional parts
 # setup
 
 ```bash
-pip install git+https://github.com/elalish/manifold.git
 pip install git+https://github.com/wrongbad/badcad.git
 # optional dependencies (text + svg support)
 pip install pycairo svgelements
@@ -34,8 +33,8 @@ p_big.extrude_to(p_lil, 1)
 ```py
 from badcad import *
 deathstar = sphere(r=1) - sphere(r=0.5).move(1.2,0,0)
-deathstar.to_stl('deathstar.stl')
-deathstar
+deathstar.stl('deathstar.stl')
+deathstar.rotate(y=-45, z=45)
 ```
 
 ![deathstar](img/deathstar.png)
@@ -43,7 +42,8 @@ deathstar
 ```py
 from badcad import *
 bolt = threads(d=8, h=16, pitch=1) 
-bolt + circle(r=5, fn=6).offset(1,'round').extrude(4).move(0,0,15)
+bolt += circle(r=5, fn=6).offset(1,'round').extrude(4).move(0,0,15)
+bolt.align(x=0,y=0,z=0).rotate(x=-90)
 ```
 
 ![bolt](img/bolt.png)
@@ -51,7 +51,8 @@ bolt + circle(r=5, fn=6).offset(1,'round').extrude(4).move(0,0,15)
 ```py
 from badcad import *
 t = text('yo', font='monospace')
-t.offset(1,'round').extrude(2) - t.extrude(2)
+t = t.offset(1,'round').extrude(2) - t.extrude(2)
+t.align(x=0)
 ```
 
 ![txt](img/txt.png)
