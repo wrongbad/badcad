@@ -2,10 +2,14 @@ from setuptools import setup, find_packages
 
 setup(
     name='badcad',
-    version='0.1.0',
+    version='0.1.1',
     url='https://github.com/wrongbad/badcad.git',
     author='wrongbad',
     description='csg for python/jupyter environments',
     packages=find_packages(),    
-    install_requires=['pythreejs', 'manifold3d==3'],
+    install_requires=[
+        'manifold3d',
+        'pythreejs',
+        'nbformat',
+    ],
 )
