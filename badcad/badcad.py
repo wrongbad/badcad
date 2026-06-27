@@ -230,6 +230,7 @@ class Shape:
         return self.cross_section.area()
 
     def bounds(self):
+        """returns xmin, ymin, xmax, ymax"""
         return self.cross_section.bounds()
 
     def align(self, 
