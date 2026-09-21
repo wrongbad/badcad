@@ -303,7 +303,7 @@ class Shape:
             ring = [[c * np.cos(a), c * np.sin(a), 0] for a in np.linspace(0, 2 * np.pi, n, endpoint=False)]
             tool = Manifold.hull_points(np.array(ring + [[0, 0, c], [0, 0, -c]]))
         else:
-            raise ValueError(f'{style=}')
+            raise ValueError(f"style must be 'round' or 'chamfer', not {style!r}")
         z0 = c if bottom else -c
         z1 = height - c if top else height + c
         core = self.offset(-c, 'round').cross_section.extrude(z1 - z0).translate((0, 0, z0))
