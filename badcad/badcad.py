@@ -10,12 +10,6 @@ from .svg import svg2polygons
 
 stl_dtype = np.dtype([('norm',np.float32,3),('vert',np.float32,9),('pad',np.int8,2)])
 
-def _call(obj, name, old_name):
-    # manifold3d renamed some getters (get_volume -> volume, ...)
-    # use the new name when it exists, else the old one
-    fn = getattr(obj, name, None) or getattr(obj, old_name)
-    return fn()
-
 # wrapper for Manifold
 # adds jupyter preview & tweaks API
 class Solid:
@@ -73,13 +67,13 @@ class Solid:
         return [Solid(m) for m in self.manifold.decompose()]
 
     def genus(self):
-        return _call(self.manifold, 'genus', 'get_genus')
+        return self.manifold.genus()
 
     def get_surface_area(self):
-        return _call(self.manifold, 'surface_area', 'get_surface_area')
+        return self.manifold.surface_area()
 
     def get_volume(self):
-        return _call(self.manifold, 'volume', 'get_volume')
+        return self.manifold.volume()
 
     def hull(self, *others):
         return Solid(Manifold.batch_hull([self.manifold, *[o.manifold for o in others]]))
@@ -109,7 +103,7 @@ class Solid:
         return self.manifold.original_id()
 
     def precision(self):
-        return _call(self.manifold, 'get_tolerance', 'precision')
+        return self.manifold.get_tolerance()
 
     def refine(self, n=2):
         return Solid(self.manifold.refine(n))
@@ -206,18 +200,11 @@ class Solid:
         m = manifold3d.Mesh(verts, tris, face_id=np.arange(len(tris)))
         return Solid(Manifold(m))
 
-    # manifold3d added minkowski_sum / minkowski_difference in 3.x
     def minkowski_sum(self, other):
-        return Solid(self._minkowski('minkowski_sum')(other.manifold))
+        return Solid(self.manifold.minkowski_sum(other.manifold))
 
     def minkowski_difference(self, other):
-        return Solid(self._minkowski('minkowski_difference')(other.manifold))
-
-    def _minkowski(self, name):
-        fn = getattr(self.manifold, name, None)
-        if fn is None:
-            raise NotImplementedError(f'{name} needs manifold3d 3.0 or newer')
-        return fn
+        return Solid(self.manifold.minkowski_difference(other.manifold))
 
     def stl(self, filename=None):
         mesh = self.to_mesh()
