@@ -24,7 +24,7 @@ def _entities(data):
             continue
         if cur:
             cur[1].append((code, val))
-    return ents
+    return ents if in_ent else None
 
 
 def _arc(cx, cy, r, a0, a1, fn):
@@ -71,22 +71,37 @@ def _chain(segs, tol):
                 segs.pop(i)
                 grew = True
                 break
-        if np.linalg.norm(loop[0] - loop[-1]) < tol:
-            loop = loop[:-1]
-        loops.append(np.array(loop))
+        if np.linalg.norm(loop[0] - loop[-1]) >= tol:
+            x, y = loop[-1]
+            raise ValueError(f'dxf: open outline, no segment continues at ({x:g}, {y:g})')
+        loops.append(np.array(loop[:-1]))
     return loops
 
 
-def dxf2polygons(data, fn=64, tol=1e-6):
+def dxf2polygons(data, fn=64, tol=1e-6, on_unknown=None):
     """Read LINE, ARC, CIRCLE and LWPOLYLINE entities from DXF text.
     Returns a list of closed polygons (numpy arrays). `fn` is the number
-    of segments for a full circle; `tol` is the gap that still joins."""
-    segs, loops = [], []
-    for kind, codes in _entities(data):
+    of segments for a full circle; `tol` is the gap that still joins.
+
+    Any other entity type raises ValueError, unless you give
+    `on_unknown(kind, codes)`. It gets the entity type and its list of
+    (group code, value) pairs, and returns a list of point paths to add
+    (Nx2 arrays; repeat the first point to close a path), or None to
+    skip the entity. An outline that does not close raises ValueError."""
+    segs, loops, unknown = [], [], {}
+    ents = _entities(data)
+    if ents is None:
+        raise ValueError('dxf: no ENTITIES section')
+    for kind, codes in ents:
         get = {}
         for k, v in codes:
             get.setdefault(k, v)
-        f = lambda k, d=0.0: float(get.get(k, d))
+
+        def f(k):
+            if k not in get:
+                raise ValueError(f'dxf: {kind} has no group code {k}')
+            return float(get[k])
+
         if kind == 'LINE':
             segs.append(np.array([[f('10'), f('20')], [f('11'), f('21')]]))
         elif kind == 'ARC':
@@ -114,4 +129,14 @@ def dxf2polygons(data, fn=64, tol=1e-6):
                 loops.append(pts[:-1])
             else:
                 segs.append(pts)
+        elif on_unknown is not None:
+            for path in on_unknown(kind, codes) or []:
+                segs.append(np.asarray(path, dtype=float))
+        else:
+            unknown[kind] = unknown.get(kind, 0) + 1
+    if unknown:
+        found = ', '.join(f'{k} ({n})' for k, n in sorted(unknown.items()))
+        raise ValueError(f'dxf: unsupported entity types: {found}. '
+                         'Supported: LINE, ARC, CIRCLE, LWPOLYLINE. '
+                         'Pass on_unknown to handle or skip them.')
     return loops + _chain(segs, tol)

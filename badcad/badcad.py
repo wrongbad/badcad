@@ -480,13 +480,14 @@ def polygon(points, fill_rule='even_odd'):
 def cross_section(solid, z=0):
     return Shape(solid.manifold.slice(z))
 
-def dxf(filename=None, data=None, fn=64):
+def dxf(filename=None, data=None, fn=64, on_unknown=None):
     """Load a DXF file (LINE, ARC, CIRCLE, LWPOLYLINE) as a Shape.
-    Loops inside other loops become holes (even-odd fill)."""
+    Loops inside other loops become holes (even-odd fill).
+    Other entity types raise ValueError; see dxf2polygons for on_unknown."""
     if data is None:
         with open(filename, encoding='latin-1') as f:
             data = f.read()
-    polys = dxf2polygons(data, fn=fn)
+    polys = dxf2polygons(data, fn=fn, on_unknown=on_unknown)
     return Shape(CrossSection(polys, fillrule=manifold3d.FillRule.EvenOdd))
 
 def text(t, size=10, font="Helvetica", fn=8):
