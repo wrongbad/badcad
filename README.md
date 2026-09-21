@@ -67,6 +67,8 @@ t.align(x=0)
 
 `Solid.orient(direction, origin)` - point a part built along +z (a hole, a boss, threads) along any direction
 
+`Solid.prune(min_volume, largest_only)` - drop the tiny slivers and skins that booleans can leave where faces almost meet
+
 # motivation
 
 to escape openscad syntax - op wrapping and nesting is an editing nightmare compared to `A + B.move(...) - C` style

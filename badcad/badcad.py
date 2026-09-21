@@ -72,6 +72,16 @@ class Solid:
     def decompose(self):
         return [Solid(m) for m in self.manifold.decompose()]
 
+    def prune(self, min_volume=1e-3, largest_only=False):
+        """Drop separate bodies smaller than `min_volume` (mm^3): the thin
+        skins and slivers that booleans can leave where faces almost meet.
+        With largest_only=True, keep only the biggest body."""
+        parts = sorted(self.manifold.decompose(), key=lambda m: m.volume(), reverse=True)
+        if largest_only:
+            parts = parts[:1]
+        parts = [m for m in parts if m.volume() >= min_volume]
+        return Solid(Manifold.compose(parts)) if parts else Solid()
+
     def genus(self):
         return _call(self.manifold, 'genus', 'get_genus')
 
