@@ -11,6 +11,11 @@ from .dxf import dxf2polygons
 
 stl_dtype = np.dtype([('norm',np.float32,3),('vert',np.float32,9),('pad',np.int8,2)])
 
+# ray directions for Solid.contains(): the axes and the cube diagonals
+_CONTAINS_RAYS = [np.array(d, dtype=float) / np.linalg.norm(d) for d in
+                  [(1, 0, 0), (0, 1, 0), (0, 0, 1),
+                   (1, 1, 1), (-1, 1, 1), (1, -1, 1), (1, 1, -1)]]
+
 # wrapper for Manifold
 # adds jupyter preview & tweaks API
 class Solid:
@@ -76,6 +81,35 @@ class Solid:
             parts = parts[:1]
         parts = [m for m in parts if m.volume() >= min_volume]
         return Solid(Manifold.compose(parts)) if parts else Solid()
+
+    def contains(self, point):
+        """True if `point` is inside the solid.
+
+        Casts rays from the point to beyond the bounding box, along the
+        three axes and the four cube diagonals, and counts the surface hits
+        of each ray: an odd count is inside. A ray that runs through an edge
+        or a vertex can count wrong, so the majority of the seven rays wins."""
+        p = np.array(point, dtype=float)
+        x0, y0, z0, x1, y1, z1 = self.bounding_box()
+        if not (x0 <= p[0] <= x1 and y0 <= p[1] <= y1 and z0 <= p[2] <= z1):
+            return False
+        span = np.linalg.norm([x1 - x0, y1 - y0, z1 - z0]) + 1.0
+        inside = 0
+        for d in _CONTAINS_RAYS:
+            hits = self.manifold.ray_cast(tuple(p), tuple(p + d * span))
+            inside += len(hits) % 2
+        return inside > len(_CONTAINS_RAYS) // 2
+
+    def min_gap(self, other, search_length=None):
+        """Smallest distance between this solid and `other` (0 if they
+        touch or overlap). The default search length covers both
+        bounding boxes, so the result is the real gap."""
+        if search_length is None:
+            a = np.array(self.bounding_box()).reshape(2, 3)
+            b = np.array(other.bounding_box()).reshape(2, 3)
+            lo, hi = np.minimum(a[0], b[0]), np.maximum(a[1], b[1])
+            search_length = float(np.linalg.norm(hi - lo)) + 1.0
+        return self.manifold.min_gap(other.manifold, search_length)
 
     def genus(self):
         return self.manifold.genus()
