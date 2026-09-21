@@ -57,20 +57,6 @@ t.align(x=0)
 
 ![txt](img/txt.png)
 
-# interesting functions
-
-`Shape.extrude_to()` - automatically find min-distance alignment between two polygons and create 3d extrusion from one to the other
-
-`contrib.extrude_edges(shape, height, radius, style)` - extrude with rounded or chamfered top and bottom edges; works with holes and several polygons
-
-`threads()` - generate screw threads
-
-`Shape.align()`, `Solid.align()` - use bounding box to align center, min, or max to given location, per axis
-
-`Solid.orient(direction, origin)` - point a part built along +z (a hole, a boss, threads) along any direction
-
-`Solid.prune(min_volume, largest_only)` - drop the tiny slivers and skins that booleans can leave where faces almost meet
-
 # motivation
 
 to escape openscad syntax - op wrapping and nesting is an editing nightmare compared to `A + B.move(...) - C` style
