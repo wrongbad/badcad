@@ -86,10 +86,6 @@ class Solid:
         x0, y0, z0, x1, y1, z1 = self.bounding_box()
         if not (x0 <= p[0] <= x1 and y0 <= p[1] <= y1 and z0 <= p[2] <= z1):
             return False
-        if not hasattr(self.manifold, 'ray_cast'):
-            e = 1e-4
-            probe = Manifold.cube((e, e, e), center=True).translate(tuple(p))
-            return (self.manifold ^ probe).num_tri() > 0
         d = np.array([1.0, 0.1234, 0.0567])
         d /= np.linalg.norm(d)
         span = np.linalg.norm([x1 - x0, y1 - y0, z1 - z0]) + 1.0
