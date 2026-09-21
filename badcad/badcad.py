@@ -183,7 +183,7 @@ class Solid:
         return Shape(self.manifold.transform(m).slice(0))
 
     def split(self, cutter):
-        inter, diff = self.manifold.split(cutter)
+        inter, diff = self.manifold.split(cutter.manifold)
         return Solid(inter), Solid(diff)
 
     def split_by_plane(self, x=0, y=0, z=0, offset=0):
@@ -525,7 +525,7 @@ def hull(*solids):
     return Solid(Manifold.batch_hull(mans))
 
 def hull_points(points):
-    return Shape(Manifold.hull_points(points))
+    return Solid(Manifold.hull_points(points))
 
 def hull2d(*shapes):
     sects = [s.cross_section for s in shapes]
