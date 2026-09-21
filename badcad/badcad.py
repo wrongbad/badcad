@@ -223,10 +223,16 @@ class Solid:
     # def minkowski_difference(self, other):
     #     return Solid(self.manifold.minkowski_difference(other.manifold))
 
-    def png(self, filename, elev=25, azim=-60, size=800, color='#6aa0c8', light=(0.4, -0.6, 0.8)):
+    def png(self, filename, elev=25, azim=-60, size=800, color='#6aa0c8', light=(0.4, -0.6, 0.8), max_edge=None):
         """Render to a PNG file without Jupyter or a GL context (needs
         matplotlib). elev / azim set the camera like matplotlib's view_init.
-        Returns self, like stl()."""
+        Returns self, like stl().
+
+        matplotlib sorts each triangle by its centre, so long thin triangles
+        can show through the faces in front of them. png() first splits
+        every edge longer than `max_edge` (mm). The default is 1/40 of the
+        largest bounding box size. A smaller value is more accurate but
+        slower. max_edge=0 does not split."""
         try:
             import matplotlib
             matplotlib.use('Agg')
@@ -235,10 +241,12 @@ class Solid:
             from mpl_toolkits.mplot3d.art3d import Poly3DCollection
         except ImportError as e:
             raise ImportError('Solid.png() needs matplotlib: pip install matplotlib') from e
-        # split long triangles: matplotlib sorts each triangle by its centre,
-        # and long thin triangles sort wrongly against faces behind them
-        x0, y0, z0, x1, y1, z1 = self.bounding_box()
-        m = self.manifold.refine_to_length(max(x1 - x0, y1 - y0, z1 - z0) / 40)
+        m = self.manifold
+        if max_edge is None:
+            x0, y0, z0, x1, y1, z1 = self.bounding_box()
+            max_edge = max(x1 - x0, y1 - y0, z1 - z0) / 40
+        if max_edge > 0:
+            m = m.refine_to_length(max_edge)
         mesh = m.to_mesh()
         verts = np.asarray(mesh.vert_properties)[:, :3]
         tris = verts[np.asarray(mesh.tri_verts)]
