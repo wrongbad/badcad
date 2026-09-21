@@ -7,6 +7,7 @@ from .loft import polygon_nearest_alignment
 from .path import PolyPath
 from .text import text2svg
 from .svg import svg2polygons
+from .dxf import dxf2polygons
 
 stl_dtype = np.dtype([('norm',np.float32,3),('vert',np.float32,9),('pad',np.int8,2)])
 
@@ -478,6 +479,15 @@ def polygon(points, fill_rule='even_odd'):
 
 def cross_section(solid, z=0):
     return Shape(solid.manifold.slice(z))
+
+def dxf(filename=None, data=None, fn=64):
+    """Load a DXF file (LINE, ARC, CIRCLE, LWPOLYLINE) as a Shape.
+    Loops inside other loops become holes (even-odd fill)."""
+    if data is None:
+        with open(filename, encoding='latin-1') as f:
+            data = f.read()
+    polys = dxf2polygons(data, fn=fn)
+    return Shape(CrossSection(polys, fillrule=manifold3d.FillRule.EvenOdd))
 
 def text(t, size=10, font="Helvetica", fn=8):
     polys = svg2polygons(text2svg(t, size=size, font=font), fn=fn)
