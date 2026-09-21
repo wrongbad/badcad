@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "badcad"
+version = "0.1.1"
+description = "csg for python/jupyter environments"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "wrongbad" }]
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "manifold3d<4",
+    "pythreejs",
+    "nbformat",
+]
+
+[project.optional-dependencies]
+text = ["pycairo"]
+svg = ["svgelements"]
+all = ["pycairo", "svgelements"]
+
+[project.urls]
+Homepage = "https://github.com/wrongbad/badcad"
+
+[tool.setuptools.packages.find]
+include = ["badcad*"]

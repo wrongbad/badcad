@@ -15,7 +15,7 @@ specifically for creating and exporting functional parts
 ```bash
 pip install git+https://github.com/wrongbad/badcad.git
 # optional dependencies (text + svg support)
-pip install pycairo svgelements
+pip install "badcad[all] @ git+https://github.com/wrongbad/badcad.git"
 ```
 
 # example
