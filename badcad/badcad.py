@@ -238,9 +238,7 @@ class Solid:
         # split long triangles: matplotlib sorts each triangle by its centre,
         # and long thin triangles sort wrongly against faces behind them
         x0, y0, z0, x1, y1, z1 = self.bounding_box()
-        m = self.manifold
-        if hasattr(m, 'refine_to_length'):
-            m = m.refine_to_length(max(x1 - x0, y1 - y0, z1 - z0) / 40)
+        m = self.manifold.refine_to_length(max(x1 - x0, y1 - y0, z1 - z0) / 40)
         mesh = m.to_mesh()
         verts = np.asarray(mesh.vert_properties)[:, :3]
         tris = verts[np.asarray(mesh.tri_verts)]
