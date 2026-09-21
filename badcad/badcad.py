@@ -127,18 +127,18 @@ class Solid:
     def set_properties(self, *args, **kwargs):
         raise ValueError("not implemented")
 
-    def section(self, normal=(0, 0, 1), origin=(0, 0, 0), u=None):
+    def section(self, normal=(0, 0, 1), origin=(0, 0, 0), x_axis=None):
         """Cut with the plane through `origin` with `normal`; return a Shape.
 
-        2D frame: `origin` maps to (0, 0), the 2D x axis is `u` (default:
+        2D frame: `origin` maps to (0, 0), the 2D x axis is `x_axis` (default:
         the world x axis projected into the plane, or world y if normal is
-        close to x), and the 2D y axis is normal x u (right handed).
+        close to x), and the 2D y axis is normal x x_axis (right handed).
         With the default arguments this is the same as cross_section(s, 0)."""
         n = np.array(normal, dtype=float)
         n /= np.linalg.norm(n)
-        if u is None:
-            u = (1, 0, 0) if abs(n[0]) < 0.9 else (0, 1, 0)
-        u = np.array(u, dtype=float)
+        if x_axis is None:
+            x_axis = (1, 0, 0) if abs(n[0]) < 0.9 else (0, 1, 0)
+        u = np.array(x_axis, dtype=float)
         u = u - (u @ n) * n
         u /= np.linalg.norm(u)
         v = np.cross(n, u)
