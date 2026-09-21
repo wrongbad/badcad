@@ -10,6 +10,12 @@ from .svg import svg2polygons
 
 stl_dtype = np.dtype([('norm',np.float32,3),('vert',np.float32,9),('pad',np.int8,2)])
 
+def _call(obj, name, old_name):
+    # manifold3d renamed some getters (get_volume -> volume, ...)
+    # use the new name when it exists, else the old one
+    fn = getattr(obj, name, None) or getattr(obj, old_name)
+    return fn()
+
 # wrapper for Manifold
 # adds jupyter preview & tweaks API
 class Solid:
@@ -67,13 +73,13 @@ class Solid:
         return [Solid(m) for m in self.manifold.decompose()]
 
     def genus(self):
-        return self.manifold.get_genus()
+        return _call(self.manifold, 'genus', 'get_genus')
 
     def get_surface_area(self):
-        return self.manifold.get_surface_area()
+        return _call(self.manifold, 'surface_area', 'get_surface_area')
 
     def get_volume(self):
-        return self.manifold.get_volume()
+        return _call(self.manifold, 'volume', 'get_volume')
 
     def hull(self, *others):
         return Solid(Manifold.batch_hull([self.manifold, *[o.manifold for o in others]]))
@@ -103,7 +109,7 @@ class Solid:
         return self.manifold.original_id()
 
     def precision(self):
-        return self.manifold.precision()
+        return _call(self.manifold, 'get_tolerance', 'precision')
 
     def refine(self, n=2):
         return Solid(self.manifold.refine(n))
