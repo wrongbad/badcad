@@ -142,6 +142,27 @@ class Solid:
 
     def move(self, x=0, y=0, z=0):
         return Solid(self.manifold.translate((x,y,z)))
+
+    def orient(self, direction, origin=(0, 0, 0), x_axis=None):
+        """Turn and move so that local +z points along `direction` and the
+        local origin lands on `origin`.
+
+        Build a part along +z (a cylinder, a hole, threads), then orient it:
+            cylinder(h=10, d=3).orient((1, 1, 0), origin=(5, 0, 2))
+        `x_axis` sets the roll about the axis: local +x points as close to
+        it as it can (default: world z, or world x if direction is near z)."""
+        z = np.array(direction, dtype=float)
+        z /= np.linalg.norm(z)
+        if x_axis is None:
+            x_axis = (1, 0, 0) if abs(z[2]) > 0.9 else (0, 0, 1)
+        x = np.array(x_axis, dtype=float)
+        x = x - (x @ z) * z
+        if np.linalg.norm(x) < 1e-9:
+            raise ValueError('x_axis is parallel to direction')
+        x /= np.linalg.norm(x)
+        y = np.cross(z, x)
+        m = np.column_stack([x, y, z, np.array(origin, dtype=float)])
+        return Solid(self.manifold.transform(m))
     
     def trim_by_plane(self, x=0, y=0, z=0, offset=0):
         return Solid(self.manifold.trim_by_plane((x, y, z), offset))
