@@ -206,12 +206,18 @@ class Solid:
         m = manifold3d.Mesh(verts, tris, face_id=np.arange(len(tris)))
         return Solid(Manifold(m))
 
-    # this requires experimental fork of manifold3d 
-    # def minkowski_sum(self, other):
-    #     return Solid(self.manifold.minkowski_sum(other.manifold))
+    # manifold3d added minkowski_sum / minkowski_difference in 3.x
+    def minkowski_sum(self, other):
+        return Solid(self._minkowski('minkowski_sum')(other.manifold))
 
-    # def minkowski_difference(self, other):
-    #     return Solid(self.manifold.minkowski_difference(other.manifold))
+    def minkowski_difference(self, other):
+        return Solid(self._minkowski('minkowski_difference')(other.manifold))
+
+    def _minkowski(self, name):
+        fn = getattr(self.manifold, name, None)
+        if fn is None:
+            raise NotImplementedError(f'{name} needs manifold3d 3.0 or newer')
+        return fn
 
     def stl(self, filename=None):
         mesh = self.to_mesh()
