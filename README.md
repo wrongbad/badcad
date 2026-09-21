@@ -65,6 +65,8 @@ t.align(x=0)
 
 `Shape.align()`, `Solid.align()` - use bounding box to align center, min, or max to given location, per axis
 
+`Solid.orient(direction, origin)` - point a part built along +z (a hole, a boss, threads) along any direction
+
 # motivation
 
 to escape openscad syntax - op wrapping and nesting is an editing nightmare compared to `A + B.move(...) - C` style
