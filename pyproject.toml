@@ -12,7 +12,7 @@ authors = [{ name = "wrongbad" }]
 requires-python = ">=3.8"
 dependencies = [
     "numpy",
-    "manifold3d<4",
+    "manifold3d>=3.4,<4",
     "pythreejs",
     "nbformat",
 ]
