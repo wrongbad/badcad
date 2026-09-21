@@ -61,6 +61,8 @@ t.align(x=0)
 
 `Shape.extrude_to()` - automatically find min-distance alignment between two polygons and create 3d extrusion from one to the other
 
+`contrib.extrude_edges(shape, height, radius, style)` - extrude with rounded or chamfered top and bottom edges; works with holes and several polygons
+
 `threads()` - generate screw threads
 
 `Shape.align()`, `Solid.align()` - use bounding box to align center, min, or max to given location, per axis
