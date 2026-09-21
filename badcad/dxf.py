@@ -78,7 +78,7 @@ def _chain(segs, tol):
     return loops
 
 
-def dxf2polygons(data, fn=64, tol=1e-6, on_unknown=None):
+def dxf2polygons(data, fn=64, tol=1e-3, on_unknown=None):
     """Read LINE, ARC, CIRCLE and LWPOLYLINE entities from DXF text.
     Returns a list of closed polygons (numpy arrays). `fn` is the number
     of segments for a full circle; `tol` is the gap that still joins.
