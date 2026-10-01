@@ -153,8 +153,31 @@ class Solid:
     def refine(self, n=2):
         return Solid(self.manifold.refine(n))
 
-    def rotate(self, x=0, y=0, z=0):
-        return Solid(self.manifold.rotate((x, y, z)))
+    def rotate(self, x=0, y=0, z=0, origin=None):
+        """Rotate by x, then y, then z degrees about the world axes. With
+        `origin`, rotate about that point and not about (0, 0, 0)."""
+        if origin is None:
+            return Solid(self.manifold.rotate((x, y, z)))
+        ox, oy, oz = origin
+        return self.move(-ox, -oy, -oz).rotate(x, y, z).move(ox, oy, oz)
+
+    def simplify(self, tolerance=0):
+        """Remove vertices that move no surface more than `tolerance` (mm):
+        the extra edges that booleans and refine() leave on flat faces.
+        With 0, use the tolerance of the solid (see precision())."""
+        return Solid(self.manifold.simplify(tolerance))
+
+    def project(self):
+        """The outline of the solid seen from +z (its shadow on the xy
+        plane), as a Shape."""
+        return Shape(self.manifold.project())
+
+    def smooth(self, n=4, min_sharp_angle=52.5, min_smoothness=0):
+        """Round the faceted surface: split each edge into n parts and move
+        the new vertices onto a smooth (G1) surface through the old ones.
+        Edges with a dihedral angle above `min_sharp_angle` (degrees) stay
+        sharp. `min_smoothness` (0 to 1) rounds the sharp edges a little."""
+        return Solid(self.manifold.smooth_out(min_sharp_angle, min_smoothness).refine(n))
     
     def scale(self, x=1, y=1, z=1):
         return Solid(self.manifold.scale((x, y, z)))
@@ -482,8 +505,13 @@ class Shape:
             revolve_degrees=z,
         ))
 
-    def rotate(self, z):
-        return Shape(self.cross_section.rotate(z))
+    def rotate(self, z, origin=None):
+        """Rotate by z degrees. With `origin`, rotate about that point and
+        not about (0, 0)."""
+        if origin is None:
+            return Shape(self.cross_section.rotate(z))
+        ox, oy = origin
+        return self.move(-ox, -oy).rotate(z).move(ox, oy)
     
     def scale(self, x=1, y=1):
         return Shape(self.cross_section.scale((x, y)))
