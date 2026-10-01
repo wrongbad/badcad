@@ -618,6 +618,43 @@ def threads(d=8, h=8, pitch=1, depth_ratio=0.6, trap_scale=1, starts=1, fn=0, pi
     return m if lefty else m.mirror(x=1)
 
 
+def mesh(verts, tris, merge=True):
+    """A Solid from a triangle mesh: verts is an (N, 3) array of points and
+    tris an (M, 3) array of vertex indices.
+
+    With merge=True, vertices at the same position are joined first, so a
+    mesh with duplicate vertices (one set for each triangle, as in STL)
+    still closes. If the triangles wind clockwise (seen from outside), the
+    winding is turned over. Raises ValueError if the mesh is not a closed
+    manifold."""
+    v = np.ascontiguousarray(np.asarray(verts, dtype=np.float64)[:, :3])
+    t = np.ascontiguousarray(np.asarray(tris, dtype=np.uint64))
+    m = manifold3d.Mesh64(vert_properties=v, tri_verts=t)
+    if merge:
+        m.merge()
+    solid = Manifold(m)
+    if solid.status() != manifold3d.Error.NoError:
+        raise ValueError(f'mesh is not a closed manifold: {solid.status().name}')
+    if solid.volume() < 0:
+        m = manifold3d.Mesh64(vert_properties=v, tri_verts=np.ascontiguousarray(t[:, ::-1]))
+        if merge:
+            m.merge()
+        solid = Manifold(m)
+    return Solid(solid)
+
+def level_set(sdf, bounds, edge_length, level=0, tolerance=-1):
+    """A Solid from a signed distance function (marching tetrahedra).
+
+    sdf(x, y, z) returns a float: positive inside, negative outside. (Many
+    SDF formulas use the opposite sign; give lambda x, y, z: -f(x, y, z).)
+    bounds is (xmin, ymin, zmin, xmax, ymax, zmax), the same order as
+    Solid.bounding_box(). edge_length sets the grid size, and with it the
+    detail and the time. A positive `level` insets the surface, and a
+    negative one outsets it.
+
+    sdf is called once for each grid point, so keep it fast."""
+    return Solid(Manifold.level_set(sdf, list(bounds), edge_length, level, tolerance))
+
 def load_stl(filename=None, data=None):
     if data is None:
         with open(filename, 'rb') as f:
