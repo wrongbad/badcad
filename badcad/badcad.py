@@ -3,7 +3,7 @@ from manifold3d import Manifold, CrossSection, Mesh
 import numpy as np
 from .display import display
 from .normals import triangle_normals
-from .loft import polygon_nearest_alignment
+from .loft import polygon_nearest_alignment, ring as _loft_ring, stitch as _loft_stitch
 from .path import PolyPath
 from .text import text2svg
 from .svg import svg2polygons
@@ -583,6 +583,39 @@ def polygon(points, fill_rule='even_odd'):
 
 def cross_section(solid, z=0):
     return Shape(solid.manifold.slice(z))
+
+def loft(shapes, heights, match='arc'):
+    """One closed Solid through 2D Shapes, each at its z in `heights`
+    (in increasing order).
+
+    Each Shape must be one outline with no holes. The point counts can be
+    different. The first points of the layers are matched by distance, and
+    the sides are stitched by arc length (match='arc') or by the shorter
+    diagonal at each step (match='shortest'). Layers of a similar form
+    give the best result: offsets of one outline, or a square to a
+    circle. The result is one mesh, with no faces between the layers."""
+    if len(shapes) != len(heights) or len(shapes) < 2:
+        raise ValueError('loft needs two or more shapes, and one height for each')
+    if any(z1 <= z0 for z0, z1 in zip(heights, heights[1:])):
+        raise ValueError('loft heights must increase')
+    rings = [_loft_ring(shapes[0].to_polygons())]
+    for sh in shapes[1:]:
+        b = _loft_ring(sh.to_polygons())
+        k = int(np.argmin(np.linalg.norm(b - rings[-1][0], axis=1)))
+        rings.append(np.roll(b, -k, axis=0))
+    offsets = np.concatenate([[0], np.cumsum([len(r) for r in rings])])
+    verts = np.vstack([np.column_stack([r, np.full(len(r), float(z))])
+                       for r, z in zip(rings, heights)])
+    tris = []
+    for k in range(len(rings) - 1):
+        tris += _loft_stitch(rings[k], rings[k + 1], offsets[k], offsets[k + 1], match)
+    bottom = manifold3d.triangulate([rings[0]])[:, ::-1] + offsets[0]
+    top = manifold3d.triangulate([rings[-1]]) + offsets[-2]
+    tris = np.vstack([np.array(tris), bottom, top]).astype(np.uint64)
+    m = Manifold(manifold3d.Mesh64(vert_properties=verts, tri_verts=tris))
+    if m.status() != manifold3d.Error.NoError:
+        raise ValueError(f'loft failed: {m.status().name}')
+    return Solid(m)
 
 def dxf(filename=None, data=None, fn=64, on_unknown=None, spline_tol=0.005):
     """Load a DXF file (LINE, ARC, CIRCLE, LWPOLYLINE, SPLINE) as a Shape.
