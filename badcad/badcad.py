@@ -594,6 +594,94 @@ def dxf(filename=None, data=None, fn=64, on_unknown=None, spline_tol=0.005):
     polys = dxf2polygons(data, fn=fn, on_unknown=on_unknown, spline_tol=spline_tol)
     return Shape(CrossSection(polys, fillrule=manifold3d.FillRule.EvenOdd))
 
+def _frames(path, closed, x_axis):
+    # rotation minimising frames along the path (double reflection method)
+    p = np.asarray(path, dtype=float)
+    d = np.diff(np.vstack([p, p[:1]]) if closed else p, axis=0)
+    d /= np.linalg.norm(d, axis=1)[:, None]
+    if closed:
+        t = d + np.roll(d, 1, axis=0)
+    else:
+        t = np.vstack([d[:1], d[:-1] + d[1:], d[-1:]])
+    t /= np.linalg.norm(t, axis=1)[:, None]
+    if x_axis is None:
+        x_axis = (1, 0, 0) if abs(t[0][2]) > 0.9 else (0, 0, 1)
+    r = np.array(x_axis, dtype=float)
+    r = r - (r @ t[0]) * t[0]
+    if np.linalg.norm(r) < 1e-9:
+        raise ValueError('x_axis is parallel to the start of the path')
+    r /= np.linalg.norm(r)
+    pts = np.vstack([p, p[:1]]) if closed else p
+    tt = np.vstack([t, t[:1]]) if closed else t
+    rs = [r]
+    for i in range(len(pts) - 1):
+        v1 = pts[i + 1] - pts[i]
+        c1 = v1 @ v1
+        rl = rs[-1] - (2 / c1) * (v1 @ rs[-1]) * v1
+        tl = tt[i] - (2 / c1) * (v1 @ tt[i]) * v1
+        v2 = tt[i + 1] - tl
+        c2 = v2 @ v2
+        rn = rl - (2 / c2) * (v2 @ rl) * v2 if c2 > 1e-18 else rl
+        rs.append(rn / np.linalg.norm(rn))
+    rs = np.array(rs)
+    seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    s = np.concatenate([[0], np.cumsum(seg)]) / seg.sum()
+    if closed:
+        # the frame does not come back to its start: spread the error
+        b0 = np.cross(t[0], rs[0])
+        err = np.arctan2(rs[-1] @ b0, rs[-1] @ rs[0])
+        rs, s = rs[:-1], s[:-1]
+    else:
+        err = 0.0
+    return p, t, rs, s, err
+
+
+def sweep(shape, path, twist=0, closed=False, x_axis=None):
+    """Move the 2D `shape` along a 3D polyline and return the Solid it
+    fills.
+
+    path is an (N, 3) array of points. At each point, the shape lies in
+    the plane at right angles to the path, with its (0, 0) on the path.
+    The frame turns as little as it can along the path (a rotation
+    minimising frame), so a helix or a bent tube does not twist. Shape +x
+    starts along `x_axis` (default: world z, or world x if the path
+    starts along z), the same as Solid.orient(). `twist` adds a turn of
+    that many degrees from the start to the end. With closed=True, the
+    last point joins the first and the result has no end faces.
+
+    The shape can have holes. Use many points on a curve, and keep the
+    bend radius larger than the shape, or the sides cut through each
+    other."""
+    p, t, r, s, err = _frames(path, closed, x_axis)
+    polys = [np.asarray(q, dtype=float) for q in shape.to_polygons()]
+    flat = np.vstack(polys)
+    m = len(flat)
+    n = len(p)
+    ang = np.radians(twist) * s - err * s
+    verts = np.empty((n * m, 3))
+    for i in range(n):
+        b = np.cross(t[i], r[i])
+        c, sn = np.cos(ang[i]), np.sin(ang[i])
+        u, v = c * r[i] + sn * b, -sn * r[i] + c * b
+        verts[i * m:(i + 1) * m] = p[i] + flat[:, :1] * u + flat[:, 1:] * v
+    starts = np.concatenate([[0], np.cumsum([len(q) for q in polys])])
+    tris = []
+    rings = n if closed else n - 1
+    for i in range(rings):
+        a, b = i * m, ((i + 1) % n) * m
+        for c0, c1 in zip(starts[:-1], starts[1:]):
+            for k in range(c0, c1):
+                k1 = k + 1 if k + 1 < c1 else c0
+                tris += [(a + k, a + k1, b + k), (a + k1, b + k1, b + k)]
+    tris = np.array(tris, dtype=np.uint64)
+    if not closed:
+        cap = manifold3d.triangulate(polys).astype(np.uint64)
+        tris = np.vstack([tris, cap[:, ::-1], cap + (n - 1) * m])
+    out = Manifold(manifold3d.Mesh64(vert_properties=verts, tri_verts=tris))
+    if out.status() != manifold3d.Error.NoError:
+        raise ValueError(f'sweep failed: {out.status().name}')
+    return Solid(out)
+
 def text(t, size=10, font="Helvetica", fn=8):
     polys = svg2polygons(text2svg(t, size=size, font=font), fn=fn)
     return Shape(CrossSection(polys, fillrule=manifold3d.FillRule.EvenOdd)).mirror(y=1)
