@@ -41,7 +41,7 @@ from OCP.GeomAbs import GeomAbs_Arc, GeomAbs_Intersection
 from OCP.IFSelect import IFSelect_RetDone
 from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
 from OCP.collections import HArray1_gp_Pnt as TColgp_HArray1OfPnt
-from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_IN, TopAbs_ON, TopAbs_REVERSED, TopAbs_SHELL, TopAbs_SOLID, TopAbs_WIRE
+from OCP.TopAbs import TopAbs_COMPOUND, TopAbs_EDGE, TopAbs_FACE, TopAbs_FORWARD, TopAbs_IN, TopAbs_ON, TopAbs_REVERSED, TopAbs_SHELL, TopAbs_SOLID, TopAbs_WIRE
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopLoc import TopLoc_Location
 from OCP.TopoDS import TopoDS, TopoDS_Compound
@@ -208,8 +208,12 @@ def transform(shape, m, tags=None):
     m = np.asarray(m, dtype=float)
     a = m[:, :3]
     k = abs(np.linalg.det(a)) ** (1 / 3)
-    rigid = k > 1e-12 and np.allclose((a / k) @ (a / k).T, np.eye(3), atol=1e-9)
+    # a matrix that is rigid to 1e-4 (a rotation with rounded numbers) becomes its nearest
+    # exact rotation: a general transform would make every face a B-spline
+    rigid = k > 1e-12 and np.allclose((a / k) @ (a / k).T, np.eye(3), atol=1e-4)
     if rigid:
+        U, _, Vt = np.linalg.svd(a / k)
+        m = np.column_stack([k * (U @ Vt), m[:, 3]])
         t = gp_Trsf()
         t.SetValues(*[float(v) for v in m.reshape(-1)])
         s, tg = _apply(shape, t, tags)
@@ -223,6 +227,8 @@ def transform(shape, m, tags=None):
             fx = ShapeFix_Shape(s)
             fx.Perform()
             s = fx.Shape()
+            if not _valid(s):
+                raise ValueError('exact transform: the result is not valid')
     return (s, tg) if tags is not None else s
 
 
@@ -236,8 +242,15 @@ class BooleanFailed(ValueError):
 
 
 def _valid(shape):
+    """True if the shape passes the OpenCascade checks. A compound is checked solid by
+    solid: the check of a whole compound can fail when each solid in it is valid."""
     from OCP.BRepCheck import BRepCheck_Analyzer
-    return BRepCheck_Analyzer(shape).IsValid()
+    if BRepCheck_Analyzer(shape).IsValid():
+        return True
+    if shape.ShapeType() == TopAbs_COMPOUND:
+        parts = solids(shape) or faces(shape)
+        return bool(parts) and all(BRepCheck_Analyzer(x).IsValid() for x in parts)
+    return False
 
 
 def _size(shape, solid):
@@ -253,33 +266,58 @@ def _plausible(kind, a, b, r, tol):
     return -tol <= r <= min(a, b) + tol
 
 
-def boolean(a, b, kind, tags_a=None, tags_b=None):
+def boolean(a, b, kind, tags_a=None, tags_b=None, expect=None):
     """a + b, a - b or a & b. Returns (shape, tags).
 
     OpenCascade can give a wrong result with no error, for example a fuse of two
     slabs that touch. So the result must be a valid shape, and its volume (or area,
     for 2D) must be possible for the operation. If not, the boolean runs again with a
-    small fuzzy tolerance. If no try passes, BooleanFailed: the caller then uses the
+    small fuzzy tolerance, then with the glue modes. expect: the volume (or area) of the
+    same boolean on the meshes; a try must give about that value (OpenCascade can return
+    a valid but empty result). If no try passes, BooleanFailed: the caller then uses the
     mesh, and the result is not exact."""
     solid = bool(solids(a)) or bool(solids(b))
     va, vb = _size(a, solid), _size(b, solid)
     tol = 1e-6 * max(1.0, va + vb)
-    for fuzzy in (0.0, 1e-6, 1e-5, 1e-4):
+    from OCP.BOPAlgo import BOPAlgo_GlueEnum
+    # the tries: a plain boolean, fuzzy tolerances, then the glue modes (for parts that touch
+    # on coincident faces, for example two parts of one body that were cut apart)
+    tries = [(f, None, False) for f in (0.0, 1e-6, 1e-5, 1e-4)] + \
+            [(1e-6, BOPAlgo_GlueEnum.BOPAlgo_GlueShift, False), (1e-6, BOPAlgo_GlueEnum.BOPAlgo_GlueFull, False)]
+    if kind in ('&', '-'):
+        # a tool much larger than the body (a 4 m box) can make OpenCascade fail: only the part
+        # of the tool in the bounding box of the body changes the result, so clip it first
+        tries += [(0.0, None, True), (1e-6, None, True)]
+    clipped = None
+    for fuzzy, glue, clip in tries:
+        tool = b
+        if clip:
+            if clipped is None:
+                x0, y0, z0, x1, y1, z1 = bounding_box(a)
+                bx = move(box(x1 - x0 + 2, y1 - y0 + 2, z1 - z0 + 2), x0 - 1, y0 - 1, z0 - 1)
+                cop = BRepAlgoAPI_Common(b, bx)
+                clipped = cop.Shape() if cop.IsDone() else b
+            tool = clipped
         op = _OPS[kind]()
         from OCP.collections import List_TopoDS_Shape as TopTools_ListOfShape
         la, lb = TopTools_ListOfShape(), TopTools_ListOfShape()
         la.Append(a)
-        lb.Append(b)
+        lb.Append(tool)
         op.SetArguments(la)
         op.SetTools(lb)
         if fuzzy:
             op.SetFuzzyValue(fuzzy)
+        if glue is not None:
+            op.SetGlue(glue)
         op.Build()
         if not op.IsDone():
             continue
         op.SimplifyResult()          # join the faces on one surface that the boolean split
         r = op.Shape()
-        if _valid(r) and _plausible(kind, va, vb, _size(r, solid), tol):
+        size = _size(r, solid)
+        if expect is not None and abs(size - expect) > max(0.02 * max(abs(size), abs(expect)), 1.0 if solid else 0.1):
+            continue
+        if _valid(r) and _plausible(kind, va, vb, size, tol):
             return r, merge_tags(carry(tags_a, op), carry(tags_b, op))
     raise BooleanFailed(f'exact boolean {kind!r}: no result passed the checks')
 
@@ -955,3 +993,317 @@ def edge_length(e):
     p = GProp_GProps()
     BRepGProp.LinearProperties_s(e, p)
     return p.Mass()
+
+
+# --- exact polynomial warp -----------------------------------------------------------------------
+
+def _full_knots(knots, mults):
+    t = []
+    for k, m in zip(knots, mults):
+        t += [k] * m
+    return np.array(t, dtype=float)
+
+
+def _greville(t, k):
+    """The Greville points of a B-spline space (knot vector t, degree k): good collocation points."""
+    n = len(t) - k - 1
+    return np.array([t[i + 1:i + k + 1].mean() for i in range(n)])
+
+
+def _design(x, t, k):
+    from scipy.interpolate import BSpline
+    return BSpline.design_matrix(np.clip(x, t[k], t[-k - 1]), t, k).toarray()
+
+
+def _warp_surface(surf, fn, d, check=True, uv=None):
+    """The NURBS surface fn(surf) for a polynomial map fn of degree d (fn takes and gives
+    (N, 3) arrays). The result lies exactly in the spline space of degree (d p, d q) with
+    weights w^d, so an interpolation at the Greville points of that space is exact."""
+    from OCP.Geom import Geom_BSplineSurface
+    from OCP.collections import Array2_gp_Pnt, Array2_double, Array1_double, Array1_int
+    s = Geom_BSplineSurface(surf)                 # a copy: no change to the original
+    # the range to keep: the knot range, or, in a periodic direction, the UV range of the face
+    # (its curves can run past one period, for example below u 0 after a boolean)
+    u0, u1 = s.UKnot(s.FirstUKnotIndex()), s.UKnot(s.LastUKnotIndex())
+    v0, v1 = s.VKnot(s.FirstVKnotIndex()), s.VKnot(s.LastVKnotIndex())
+    if uv is not None:
+        if s.IsUPeriodic():
+            u0, u1 = uv[0], min(uv[1], uv[0] + s.UPeriod())
+        if s.IsVPeriodic():
+            v0, v1 = uv[2], min(uv[3], uv[2] + s.VPeriod())
+    # Segment clamps the ends and makes a periodic surface non-periodic (it can cross the seam)
+    s.Segment(u0, u1, v0, v1)
+    if s.IsUPeriodic():
+        s.SetUNotPeriodic()
+    if s.IsVPeriodic():
+        s.SetVNotPeriodic()
+    p, q = s.UDegree(), s.VDegree()
+    uk = [s.UKnot(i) for i in range(1, s.NbUKnots() + 1)]
+    vk = [s.VKnot(i) for i in range(1, s.NbVKnots() + 1)]
+    um = [s.UMultiplicity(i) for i in range(1, s.NbUKnots() + 1)]
+    vm = [s.VMultiplicity(i) for i in range(1, s.NbVKnots() + 1)]
+    P, Q = d * p, d * q
+    # the same distinct knots; an inner knot keeps its continuity (p - m): new multiplicity P - (p - m)
+    um2 = [P + 1] + [m + (P - p) for m in um[1:-1]] + [P + 1]
+    vm2 = [Q + 1] + [m + (Q - q) for m in vm[1:-1]] + [Q + 1]
+    tu, tv = _full_knots(uk, um2), _full_knots(vk, vm2)
+    gu, gv = _greville(tu, P), _greville(tv, Q)
+    # the weight function and the points of the input surface on the grid
+    rational = s.IsURational() or s.IsVRational()
+    nu, nv = len(gu), len(gv)
+    pts = np.empty((nu, nv, 3))
+    w = np.ones((nu, nv))
+    if rational:
+        tu0, tv0 = _full_knots(uk, um), _full_knots(vk, vm)
+        W0 = np.array([[s.Weight(i, j) for j in range(1, s.NbVPoles() + 1)] for i in range(1, s.NbUPoles() + 1)])
+        w = _design(gu, tu0, p) @ W0 @ _design(gv, tv0, q).T
+    for i, u in enumerate(gu):
+        for j, v in enumerate(gv):
+            pt = s.Value(float(u), float(v))
+            pts[i, j] = (pt.X(), pt.Y(), pt.Z())
+    mapped = np.asarray(fn(pts.reshape(-1, 3)), dtype=float).reshape(nu, nv, 3)
+    W = w ** d
+    hom = np.concatenate([mapped * W[..., None], W[..., None]], axis=2)      # (nu, nv, 4)
+    Bu, Bv = _design(gu, tu, P), _design(gv, tv, Q)
+    Bu_inv, Bv_inv = np.linalg.inv(Bu), np.linalg.inv(Bv)
+    C = np.einsum('ia,abk,jb->ijk', Bu_inv, hom, Bv_inv)                    # control points (homogeneous)
+    poles = Array2_gp_Pnt(1, nu, 1, nv)
+    weights = Array2_double(1, nu, 1, nv)
+    for i in range(nu):
+        for j in range(nv):
+            cw = C[i, j, 3]
+            poles.SetValue(i + 1, j + 1, gp_Pnt(*(C[i, j, :3] / cw)))
+            weights.SetValue(i + 1, j + 1, float(cw))
+
+    def arr(vals, cls):
+        a = cls(1, len(vals))
+        for i, x in enumerate(vals, 1):
+            a.SetValue(i, x)
+        return a
+    out = Geom_BSplineSurface(poles, weights, arr(uk, Array1_double), arr(vk, Array1_double),
+                              arr(um2, Array1_int), arr(vm2, Array1_int), P, Q)
+    if check:
+        rng = np.random.default_rng(0)
+        us = rng.uniform(uk[0], uk[-1], 12)
+        vs = rng.uniform(vk[0], vk[-1], 12)
+        a = np.array([[s.Value(float(u), float(v)).X(), s.Value(float(u), float(v)).Y(),
+                       s.Value(float(u), float(v)).Z()] for u, v in zip(us, vs)])
+        b = np.array([[out.Value(float(u), float(v)).X(), out.Value(float(u), float(v)).Y(),
+                       out.Value(float(u), float(v)).Z()] for u, v in zip(us, vs)])
+        err = np.abs(np.asarray(fn(a)) - b).max()
+        size = 1.0 + np.abs(a).max()
+        if err > 1e-7 * size:
+            raise ValueError(f'warp is not a polynomial of degree {d} on this face (error {err:.2e} mm)')
+    return out
+
+
+def _warp_curve(curve, first, last, fn, d):
+    """The exact NURBS curve fn(curve) on [first, last] for a polynomial map fn of degree d
+    (the same method as _warp_surface, in one parameter)."""
+    from OCP.GeomConvert import GeomConvert
+    from OCP.Geom import Geom_BSplineCurve, Geom_TrimmedCurve
+    from OCP.collections import Array1_gp_Pnt, Array1_double, Array1_int
+    c = GeomConvert.CurveToBSplineCurve_s(Geom_TrimmedCurve(curve, first, last))
+    c = Geom_BSplineCurve(c)
+    if c.IsPeriodic():
+        c.SetNotPeriodic()
+    c.Segment(first, last)
+    p = c.Degree()
+    ks = [c.Knot(i) for i in range(1, c.NbKnots() + 1)]
+    ms = [c.Multiplicity(i) for i in range(1, c.NbKnots() + 1)]
+    P = d * p
+    ms2 = [P + 1] + [m + (P - p) for m in ms[1:-1]] + [P + 1]
+    t = _full_knots(ks, ms2)
+    g = _greville(t, P)
+    w = np.ones(len(g))
+    if c.IsRational():
+        W0 = np.array([c.Weight(i) for i in range(1, c.NbPoles() + 1)])
+        w = _design(g, _full_knots(ks, ms), p) @ W0
+    pts = np.array([[c.Value(float(x)).X(), c.Value(float(x)).Y(), c.Value(float(x)).Z()] for x in g])
+    W = w ** d
+    hom = np.column_stack([np.asarray(fn(pts), dtype=float) * W[:, None], W])
+    C = np.linalg.solve(_design(g, t, P), hom)
+    poles = Array1_gp_Pnt(1, len(g))
+    wts = Array1_double(1, len(g))
+    for i in range(len(g)):
+        poles.SetValue(i + 1, gp_Pnt(*(C[i, :3] / C[i, 3])))
+        wts.SetValue(i + 1, float(C[i, 3]))
+    K = Array1_double(1, len(ks))
+    M = Array1_int(1, len(ks))
+    for i, (k, m) in enumerate(zip(ks, ms2), 1):
+        K.SetValue(i, k)
+        M.SetValue(i, m)
+    return Geom_BSplineCurve(poles, wts, K, M, P)
+
+
+def warp_poly(shape, fn, degree, tol=1e-6):
+    """The exact image of a solid under a polynomial map fn of the given degree (fn takes and
+    gives (N, 3) arrays). The topology stays: in a copy of the shape each face gets the NURBS
+    surface of the mapped face, each edge the NURBS curve of its mapped curve (both of higher
+    degree, exact up to rounding), and each vertex moves with fn. The curves of the edges on
+    the faces (2D) do not change, because the parameters of the surfaces stay the same.
+    Raises ValueError if the result is not a valid solid."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve2d
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_NurbsConvert, BRepBuilderAPI_Copy
+    from OCP.BRepLib import BRepLib
+    from OCP.TopAbs import TopAbs_VERTEX
+    from OCP.ShapeFix import ShapeFix_Shape
+    # split each closed face (a cylinder, a sphere) in two: then no face has a seam, and no
+    # warped surface must be periodic (a wire across a seam is not valid on a non-periodic one)
+    from OCP.ShapeUpgrade import ShapeUpgrade_ShapeDivideClosed
+    dc = ShapeUpgrade_ShapeDivideClosed(shape)
+    dc.SetNbSplitPoints(1)
+    dc.Perform()
+    nurbs = BRepBuilderAPI_NurbsConvert(dc.Result(), True).Shape()
+    work = BRepBuilderAPI_Copy(nurbs, True, False).Shape()
+    bld = BRep_Builder()
+    # 1. read every curve on a face (2D) while each face still has its old surface
+    on_face = []
+    for f in faces(work):
+        loc = TopLoc_Location()
+        old = BRep_Tool.Surface_s(f, loc)
+        if not loc.IsIdentity():
+            raise ValueError('exact warp: a face with a location is not supported')
+        pcs = []
+        seen = set()
+        for e in edges(f):
+            k = _Key(e)
+            if k in seen:
+                continue
+            seen.add(k)
+            if BRep_Tool.IsClosed_s(e, f):          # a seam: one curve for each side
+                e1 = TopoDS.Edge(e.Oriented(TopAbs_FORWARD))
+                e2 = TopoDS.Edge(e.Oriented(TopAbs_REVERSED))
+                pcs.append((e, BRep_Tool.CurveOnSurface_s(e1, f, 0.0, 0.0), BRep_Tool.CurveOnSurface_s(e2, f, 0.0, 0.0)))
+            else:
+                pcs.append((e, BRep_Tool.CurveOnSurface_s(e, f, 0.0, 0.0), None))
+        on_face.append((f, old, pcs))
+    # 2. the new 3D curves (from the old ones) and the new vertex points
+    new_curves = {}
+    for e in edges(work):
+        k = _Key(e)
+        if k in new_curves or BRep_Tool.Degenerated_s(e):
+            continue
+        c = BRepAdaptor_Curve(e)
+        loc = TopLoc_Location()
+        crv, a, b = BRep_Tool.Curve_s(e, loc, 0.0, 0.0), c.FirstParameter(), c.LastParameter()
+        if crv is None:
+            raise ValueError('exact warp: an edge has no 3D curve')
+        new_curves[k] = (e, _warp_curve(crv, a, b, fn, degree))
+    # 3. put in the new surfaces and the curves on them
+    for f, old, pcs in on_face:
+        from OCP.BRepTools import BRepTools
+        new = _warp_surface(old, fn, degree, uv=BRepTools.UVBounds_s(f))
+        bld.UpdateFace(f, new, TopLoc_Location(), tol)
+        for e, c1, c2 in pcs:
+            if c2 is None:
+                bld.UpdateEdge(e, c1, new, TopLoc_Location(), tol)
+            else:
+                bld.UpdateEdge(e, c1, c2, new, TopLoc_Location(), tol)
+    for e, crv in new_curves.values():
+        bld.UpdateEdge(e, crv, tol)
+    done = set()
+    for v in _explore(work, TopAbs_VERTEX):
+        k = _Key(v)
+        if k in done:
+            continue
+        done.add(k)
+        v = TopoDS.Vertex(v)
+        p = BRep_Tool.Pnt_s(v)
+        q = np.asarray(fn(np.array([[p.X(), p.Y(), p.Z()]])), dtype=float)[0]
+        bld.UpdateVertex(v, gp_Pnt(*q), tol)
+    # No SameParameter: the new 3D curves, surfaces and 2D curves agree by construction
+    # (the same parameters), and SameParameter would also read the old 2D-curve entries of
+    # the old surfaces that stay in the edges, and raise the tolerances to many mm.
+    # each solid: keep it if it is valid, or build it again from its one shell (that sets
+    # the orientation of the shell right). A solid with an inner void that is not valid fails.
+    from OCP.ShapeFix import ShapeFix_Solid
+    parts = []
+    for so in solids(work):
+        if _valid(so):
+            parts.append(so)
+            continue
+        shells = _explore(so, TopAbs_SHELL)
+        if len(shells) != 1:
+            raise ValueError('exact warp: a solid with an inner void is not valid after the warp')
+        new = ShapeFix_Solid().SolidFromShell(TopoDS.Shell(shells[0]))
+        if not _valid(new):
+            raise ValueError('exact warp: the result is not a valid solid')
+        parts.append(new)
+    if not parts:
+        raise ValueError('exact warp: the result has no solid')
+    out = parts[0] if len(parts) == 1 else compound(parts)
+    from OCP.ShapeAnalysis import ShapeAnalysis_ShapeTolerance
+    if ShapeAnalysis_ShapeTolerance().Tolerance(out, 1) > 1e-4:
+        raise ValueError('exact warp: the result has large tolerances')
+    if volume(out) < 0:
+        out = out.Reversed()
+    return out
+
+
+def join_touching(shapes, tol=1e-6):
+    """One solid from solids that touch only on whole faces (for example the parts of one
+    body that a plane cut apart, after each part got its own map). Each pair of faces of
+    two different parts that are the same region with opposite normals is removed, and the
+    other faces are sewn. No boolean runs, so faces of different surface types that lie on
+    each other (a plane and a NURBS of the same plane) are no problem.
+    Raises ValueError if the result is not a valid solid with the volume of the parts."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing, BRepBuilderAPI_MakeSolid
+    from OCP.ShapeFix import ShapeFix_Solid
+
+    def props(f):
+        p = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(f, p)
+        c = p.CentreOfMass()
+        # the normal at the middle of the UV range (always on the surface; the centre of
+        # mass of a curved face can be off it)
+        from OCP.BRepTools import BRepTools
+        u0, u1, v0, v1 = BRepTools.UVBounds_s(f)
+        sa = BRepAdaptor_Surface(f)
+        q, du, dv = gp_Pnt(), gp_Vec(), gp_Vec()
+        sa.D1((u0 + u1) / 2, (v0 + v1) / 2, q, du, dv)
+        nv = du.Crossed(dv)
+        n = None
+        if nv.Magnitude() > 1e-12:
+            nv.Normalize()
+            n = np.array([nv.X(), nv.Y(), nv.Z()]) * (-1.0 if f.Orientation() == TopAbs_REVERSED else 1.0)
+        return p.Mass(), np.array([c.X(), c.Y(), c.Z()]), n
+
+    items = []
+    for k, s in enumerate(shapes):
+        for f in faces(s):
+            a, c, n = props(f)
+            items.append((k, f, a, c, n))
+    drop = set()
+    for i in range(len(items)):
+        ki, fi, ai, ci, ni = items[i]
+        if i in drop or ni is None:
+            continue
+        for j in range(i + 1, len(items)):
+            kj, fj, aj, cj, nj = items[j]
+            if j in drop or kj == ki or nj is None:
+                continue
+            size = max(1.0, ai)
+            if abs(ai - aj) <= 1e-6 * size and np.linalg.norm(ci - cj) <= 1e-5 and np.dot(ni, nj) < -0.999999:
+                drop.update((i, j))
+                break
+    if not drop:
+        raise ValueError('join_touching: the parts have no faces in common')
+    sew = BRepBuilderAPI_Sewing(tol)
+    for i, (k, f, a, c, n) in enumerate(items):
+        if i not in drop:
+            sew.Add(f)
+    sew.Perform()
+    shells = _explore(sew.SewedShape(), TopAbs_SHELL)
+    if not shells:
+        raise ValueError('join_touching: the faces did not sew into a shell')
+    parts = []
+    for sh in shells:
+        sol = ShapeFix_Solid().SolidFromShell(TopoDS.Shell(sh))
+        parts.append(sol)
+    out = parts[0] if len(parts) == 1 else compound(parts)
+    want = sum(volume(s) for s in shapes)
+    got = volume(out)
+    if not _valid(out) or abs(got - want) > 1e-6 * max(1.0, want):
+        raise ValueError(f'join_touching: the result is not valid (volume {got:.4f}, parts {want:.4f})')
+    return out

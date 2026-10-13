@@ -161,16 +161,22 @@ class Solid:
 
     def _exact_bool(self, other, kind):
         o = _occt()
+        op = {'+': '__add__', '-': '__sub__', '&': '__xor__'}[kind]
+        # OpenCascade can return a valid but wrong result (an empty intersection of two
+        # solids that overlap): each exact try must give about the volume of the same
+        # boolean on the meshes
+        m = getattr(self.manifold, op)(other.manifold)
         try:
-            s, t = o.boolean(self.occ, other.occ, kind, self.tags, other.tags)
+            s, t = o.boolean(self.occ, other.occ, kind, self.tags, other.tags, expect=m.volume())
         except o.BooleanFailed:
-            # no exact result passed the checks: use the mesh (the result is not exact)
-            op = {'+': '__add__', '-': '__sub__', '&': '__xor__'}[kind]
-            return Solid(getattr(self.manifold, op)(other.manifold))
+            return Solid(m)         # no exact try matched: the result is not exact
         return Solid(occ=s, tags=t)
 
     def _exact_xf(self, fn, *args):
-        s, t = fn(self.occ, *args, tags=self.tags)
+        try:
+            s, t = fn(self.occ, *args, tags=self.tags)
+        except ValueError:
+            return None             # no valid exact result: the caller uses the mesh
         return Solid(occ=s, tags=t)
 
     # TODO add visual properties (e.g. color, texture)
@@ -333,7 +339,9 @@ class Solid:
             n = np.array([x, y, z], dtype=float)
             n /= np.linalg.norm(n)
             m = np.column_stack([np.eye(3) - 2 * np.outer(n, n), np.zeros(3)])
-            return self._exact_xf(_occt().transform, m)
+            r = self._exact_xf(_occt().transform, m)
+            if r is not None:
+                return r
         return Solid(self.manifold.mirror((x, y, z)))
 
     def num_edge(self):
@@ -394,7 +402,9 @@ class Solid:
     
     def scale(self, x=1, y=1, z=1):
         if self.occ is not None:
-            return self._exact_xf(_occt().transform, np.column_stack([np.diag([x, y, z]), np.zeros(3)]))
+            r = self._exact_xf(_occt().transform, np.column_stack([np.diag([x, y, z]), np.zeros(3)]))
+            if r is not None:
+                return r
         return Solid(self.manifold.scale((x, y, z)))
 
     def set_properties(self, *args, **kwargs):
@@ -452,7 +462,9 @@ class Solid:
     
     def transform(self, matrix):
         if self.occ is not None:
-            return self._exact_xf(_occt().transform, matrix)
+            r = self._exact_xf(_occt().transform, matrix)
+            if r is not None:
+                return r
         return Solid(self.manifold.transform(matrix))
 
     def move(self, x=0, y=0, z=0):
@@ -526,6 +538,18 @@ class Solid:
         tris = np.array(tris, np.int32)
         m = manifold3d.Mesh(verts, tris, face_id=np.arange(len(tris)))
         return Solid(Manifold(m))
+
+    def warp_poly(self, fn, degree=2):
+        """Move each point with fn, a polynomial map of the given degree (fn takes
+        and gives (N, 3) arrays of points). On an exact solid the result is exact:
+        each face becomes a NURBS surface of higher degree (occt). On a mesh this
+        is warp_batch(fn)."""
+        if self.occ is not None:
+            try:
+                return Solid(occ=_occt().warp_poly(self.occ, fn, degree))
+            except Exception:
+                pass            # not a polynomial of that degree, or no valid exact result: use the mesh
+        return self.warp_batch(lambda v: np.asarray(fn(np.asarray(v)), dtype=float))
 
     def minkowski_sum(self, other):
         """The Minkowski sum. With the occt engine, the sum of an exact
@@ -662,11 +686,12 @@ class Shape:
 
     def _exact_bool(self, other, kind):
         o = _occt()
+        op = {'+': '__add__', '-': '__sub__', '&': '__xor__'}[kind]
+        m = getattr(self.cross_section, op)(other.cross_section)        # the same check, with areas
         try:
-            f, _ = o.boolean(self.occ, other.occ, kind)
+            f, _ = o.boolean(self.occ, other.occ, kind, expect=m.area())
         except o.BooleanFailed:
-            op = {'+': '__add__', '-': '__sub__', '&': '__xor__'}[kind]
-            return Shape(getattr(self.cross_section, op)(other.cross_section))
+            return Shape(m)
         return Shape(occ=f)
 
     def _exact_m(self, m2):
@@ -1251,6 +1276,17 @@ def ruled_loft(rings, heights):
     if _ENGINE != 'occt':
         raise ValueError('ruled_loft() needs the occt engine')
     return Solid(occ=_occt().ruled_loft([np.asarray(r, dtype=float) for r in rings], heights))
+
+def join_touching(solids):
+    """One exact solid from exact solids that touch only on whole faces (the parts of one
+    body that a plane cut apart). It removes the shared faces and sews the rest, with no
+    boolean. If that fails (or a part is not exact), this is union(solids)."""
+    if solids and _exact(*solids):
+        try:
+            return Solid(occ=_occt().join_touching([s.occ for s in solids]))
+        except Exception:
+            pass
+    return union(solids)
 
 def compose(solids):
     """One Solid that holds the given Solids as separate bodies, with no
