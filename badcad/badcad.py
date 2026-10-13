@@ -640,14 +640,17 @@ class Shape:
         m = np.array([[m2[0, 0], m2[0, 1], 0, m2[0, 2]], [m2[1, 0], m2[1, 1], 0, m2[1, 2]], [0, 0, 1, 0]])
         return Shape(occ=_occt().transform(self.occ, m))
 
-    def evolve(self, profile=None, round_r=None):
+    def evolve(self, profile=None, round_r=None, join='round'):
         """An exact solid that a profile sweeps around the outline (occt).
-        profile: (inset, z) points from (0, 0); at height z the outline
-        moves in by inset (a negative inset moves it out). round_r: a
-        quarter circle that rounds the top edge with radius r."""
+        profile: steps from (inset 0, z 0); a step (inset, z) is a line to
+        that point, and a step ((inset, z), (inset, z)) is an arc through
+        the first point to the second. At height z the outline moves in by
+        inset (a negative inset moves it out). round_r: a quarter circle
+        that rounds the top edge with radius r. join: 'round' or 'miter' at
+        the convex corners of the outline."""
         if self.occ is None:
             raise ValueError('evolve() needs an exact Shape (the occt engine)')
-        return Solid(occ=_occt().evolved(self.occ, profile, round_r))
+        return Solid(occ=_occt().evolved(self.occ, profile, round_r, join))
 
     def _repr_mimebundle_(self, **kwargs):
         # called by jupyter to figure out how to display this object
@@ -1186,6 +1189,14 @@ def threads(d=8, h=8, pitch=1, depth_ratio=0.6, trap_scale=1, starts=1, fn=0, pi
     m = solid.warp_batch(warp)
     return m if lefty else m.mirror(x=1)
 
+
+def ruled_loft(rings, heights):
+    """An exact solid through closed polygon rings (lists of (x, y)), each
+    at its height, all with the same point count: point i of one ring joins
+    point i of the next with a ruled surface (occt engine only)."""
+    if _ENGINE != 'occt':
+        raise ValueError('ruled_loft() needs the occt engine')
+    return Solid(occ=_occt().ruled_loft([np.asarray(r, dtype=float) for r in rings], heights))
 
 def compose(solids):
     """One Solid that holds the given Solids as separate bodies, with no

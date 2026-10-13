@@ -535,33 +535,82 @@ def sweep(profile_face, path_points, closed=False, smooth=True):
     return out[0] if len(out) == 1 else compound(out)
 
 
-def evolved(face, profile_points=None, arc=None):
+def _profile_wire(steps, reverse=False):
+    """A profile wire in the plane x = 0 from (y 0, z 0): each step is (inset, z), a line to
+    that point, or ((inset, z), (inset, z)), an arc through the first point to the second.
+    Returns (wire, the lowest z, the highest z)."""
+    pts = [(0.0, 0.0)]
+    segs = []
+    for st in steps:
+        if isinstance(st[0], (tuple, list)):
+            (im, zm), (ie, ze) = st
+            segs.append(('arc', pts[-1], (float(im), float(zm)), (float(ie), float(ze))))
+            pts.append((float(ie), float(ze)))
+        else:
+            segs.append(('line', pts[-1], (float(st[0]), float(st[1]))))
+            pts.append((float(st[0]), float(st[1])))
+    mk = BRepBuilderAPI_MakeWire()
+    for sg in (reversed(segs) if reverse else segs):
+        ends = [sg[1], sg[-1]][::-1] if reverse else [sg[1], sg[-1]]
+        if sg[0] == 'line':
+            mk.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(0, *ends[0]), gp_Pnt(0, *ends[1])).Edge())
+        else:
+            a = GC_MakeArcOfCircle(gp_Pnt(0, *ends[0]), gp_Pnt(0, *sg[2]), gp_Pnt(0, *ends[1])).Value()
+            mk.Add(BRepBuilderAPI_MakeEdge(a).Edge())
+    zs = [z for _, z in pts]
+    return mk.Wire(), min(zs), max(zs)
+
+
+def evolved(face, profile_points=None, arc=None, join='round'):
     """The solid that a profile sweeps around the outline of a planar face (an evolved shape).
 
-    profile_points: (inset, z) pairs from (0, 0): at height z the outline is moved in by
-    inset (negative: out). arc=(r, quarter) makes a quarter circle of radius r that starts
+    profile_points: steps from (inset 0, z 0) (see _profile_wire): at height z the outline
+    is moved in by inset (negative: out). arc=r is a quarter circle of radius r that starts
     on the outline and ends r in, at height r (a round top edge).
-    The outline joins at convex corners are arcs (the exact rolling result)."""
+    join: the outline at convex corners: 'round' (arcs, the exact rolling result) or
+    'miter' (sharp corners).
+
+    MakeEvolved reads some arcs from the other end. The result of the wrong direction is
+    out of the height range of the profile, so the other direction is used then."""
     if arc is not None:
         r = float(arc)
         c = math.cos(math.pi / 4)
-        # the three points in reverse order: the edge then starts at the outline (see the test)
-        a = GC_MakeArcOfCircle(gp_Pnt(0, r, r), gp_Pnt(0, r - r * c, r * c), gp_Pnt(0, 0, 0)).Value()
-        prof = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(a).Edge()).Wire()
-    else:
-        mk = BRepBuilderAPI_MakeWire()
-        pts = [(0.0, 0.0)] + [(float(i), float(z)) for i, z in profile_points]
-        for (i0, z0), (i1, z1) in zip(pts, pts[1:]):
-            mk.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(0, i0, z0), gp_Pnt(0, i1, z1)).Edge())
-        prof = mk.Wire()
+        profile_points = [((r - r * c, r * c), (r, r))]
+    kind = GeomAbs_Arc if join == 'round' else GeomAbs_Intersection
     out = []
     for f in faces(face):
-        ev = BRepOffsetAPI_MakeEvolved(f, prof, GeomAbs_Arc, True, True, False, 1e-6)
-        ev.Build()
-        if not ev.IsDone():
+        fz = bounding_box(f)[2]
+        res = None
+        for reverse in (False, True):
+            prof, z0, z1 = _profile_wire(profile_points, reverse)
+            try:
+                ev = BRepOffsetAPI_MakeEvolved(f, prof, kind, True, True, False, 1e-6)
+                ev.Build()
+            except Exception:
+                continue
+            if not ev.IsDone():
+                continue
+            bb = bounding_box(ev.Shape())
+            if abs(bb[2] - (fz + z0)) < 1e-4 and abs(bb[5] - (fz + z1)) < 1e-4:
+                res = ev.Shape()
+                break
+        if res is None:
             raise ValueError('evolved shape failed')
-        out.append(ev.Shape())
+        out.append(res)
     return out[0] if len(out) == 1 else compound(out)
+
+
+def ruled_loft(rings, heights):
+    """A solid through closed polygon rings that all have the same point count: point i of
+    a ring joins point i of the next one with a ruled surface. Exact for polygon designs."""
+    ts = BRepOffsetAPI_ThruSections(True, True)
+    for r, z in zip(rings, heights):
+        ts.AddWire(_wire(r, float(z)))
+    ts.CheckCompatibility(False)            # the points already match: do not move them
+    ts.Build()
+    if not ts.IsDone():
+        raise ValueError('exact ruled loft failed')
+    return ts.Shape()
 
 
 def offset3d(shape, r):
