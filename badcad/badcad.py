@@ -46,6 +46,25 @@ def _occt():
     return _occt_mod
 
 
+# BADCAD_MESH_LOG=1 with the occt engine: count each place that makes a mesh
+# (not exact) Solid or Shape, as {(badcad function, caller file:line): count}
+MESH_LOG = {} if _os.environ.get('BADCAD_MESH_LOG') else None
+_HERE = _os.path.dirname(_os.path.abspath(__file__))
+
+
+def _log_mesh(kind):
+    import sys
+    f = sys._getframe(2)
+    op = None
+    while f is not None and _os.path.dirname(_os.path.abspath(f.f_code.co_filename)) == _HERE:
+        op = f.f_code.co_name
+        f = f.f_back
+    if f is None:
+        return
+    key = (kind, op or '?', f'{f.f_code.co_filename}:{f.f_lineno} {f.f_code.co_name}')
+    MESH_LOG[key] = MESH_LOG.get(key, 0) + 1
+
+
 def _exact(*items):
     return all(getattr(x, 'occ', None) is not None for x in items)
 
@@ -66,6 +85,8 @@ _CONTAINS_RAYS = [np.array(d, dtype=float) / np.linalg.norm(d) for d in
 # adds jupyter preview & tweaks API
 class Solid:
     def __init__(self, manifold=None, occ=None, tags=None):
+        if MESH_LOG is not None and manifold is not None and occ is None and _ENGINE == 'occt':
+            _log_mesh('Solid')
         if manifold is None and occ is None:
             manifold = Manifold()
         # Manifold doesn't raise on bad input: it returns a manifold in an error
@@ -585,6 +606,8 @@ class Edge:
 
 class Shape:
     def __init__(self, cross_section=None, occ=None):
+        if MESH_LOG is not None and cross_section is not None and occ is None and _ENGINE == 'occt':
+            _log_mesh('Shape')
         if cross_section is None and occ is None:
             cross_section = CrossSection()
         self._raw = cross_section
