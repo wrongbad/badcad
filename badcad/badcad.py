@@ -1234,6 +1234,16 @@ def threads(d=8, h=8, pitch=1, depth_ratio=0.6, trap_scale=1, starts=1, fn=0, pi
     return m if lefty else m.mirror(x=1)
 
 
+def curves_shape(curves, join=1e-3, largest=False):
+    """An exact Shape from 2D curves joined end to end into closed outlines (occt
+    engine only): lines, arcs, circles and NURBS splines (see occt.curves_face).
+    Outlines inside an odd count of other outlines are holes. largest=True: only
+    the outline with the largest area."""
+    if _ENGINE != 'occt':
+        raise ValueError('curves_shape() needs the occt engine')
+    f = _occt().curves_face(curves, join, largest)
+    return Shape(occ=f) if f is not None else Shape()
+
 def ruled_loft(rings, heights):
     """An exact solid through closed polygon rings (lists of (x, y)), each
     at its height, all with the same point count: point i of one ring joins

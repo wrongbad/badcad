@@ -421,6 +421,132 @@ def polygons(loops):
     return out[0] if len(out) == 1 else compound(out)
 
 
+def curves_face(curves, join=1e-3, largest=False):
+    """Faces from exact 2D curves in the xy plane, joined end to end into closed wires.
+
+    curves: ('line', (x0, y0), (x1, y1)), ('arc', (cx, cy), r, a0, a1) counterclockwise in
+    degrees, ('circle', (cx, cy), r), or ('spline', degree, knots, [(x, y), ...], weights or
+    None). join: the largest gap between two curve ends that are joined.
+    The faces follow the even-odd rule (a wire inside an odd count of other wires is a hole).
+    largest=True: only the wire with the largest area, with no holes."""
+    from OCP.GC import GC_MakeArcOfCircle, GC_MakeSegment
+    from OCP.Geom import Geom_BSplineCurve
+    from OCP.gp import gp_Circ
+    from OCP.ShapeAnalysis import ShapeAnalysis_FreeBounds
+    from OCP.ShapeFix import ShapeFix_Wire
+    from OCP.collections import HSequence_TopoDS_Shape, Array1_gp_Pnt, Array1_double, Array1_int
+    seq = HSequence_TopoDS_Shape()
+    for c in curves:
+        kind = c[0]
+        if kind == 'line':
+            (x0, y0), (x1, y1) = c[1], c[2]
+            if abs(x1 - x0) + abs(y1 - y0) < 1e-12:
+                continue
+            e = BRepBuilderAPI_MakeEdge(gp_Pnt(x0, y0, 0), gp_Pnt(x1, y1, 0)).Edge()
+        elif kind == 'arc':
+            (cx, cy), r, a0, a1 = c[1], float(c[2]), math.radians(c[3]), math.radians(c[4])
+            if a1 <= a0:
+                a1 += 2 * math.pi
+            circ = gp_Circ(gp_Ax2(gp_Pnt(cx, cy, 0), gp_Dir(0, 0, 1)), r)
+            e = BRepBuilderAPI_MakeEdge(circ, a0, a1).Edge()
+        elif kind == 'circle':
+            (cx, cy), r = c[1], float(c[2])
+            e = BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(gp_Pnt(cx, cy, 0), gp_Dir(0, 0, 1)), r)).Edge()
+        elif kind == 'spline':
+            deg, knots, pts, ws = int(c[1]), list(c[2]), c[3], c[4]
+            uk, mult = [], []
+            for k in knots:
+                if uk and abs(k - uk[-1]) < 1e-12:
+                    mult[-1] += 1
+                else:
+                    uk.append(float(k))
+                    mult.append(1)
+            P = Array1_gp_Pnt(1, len(pts))
+            for i, (x, y) in enumerate(pts, 1):
+                P.SetValue(i, gp_Pnt(float(x), float(y), 0))
+            K = Array1_double(1, len(uk))
+            M = Array1_int(1, len(uk))
+            for i, (k, m) in enumerate(zip(uk, mult), 1):
+                K.SetValue(i, k)
+                M.SetValue(i, m)
+            if ws and any(abs(w - 1.0) > 1e-12 for w in ws):
+                W = Array1_double(1, len(ws))
+                for i, w in enumerate(ws, 1):
+                    W.SetValue(i, float(w))
+                curve = Geom_BSplineCurve(P, W, K, M, deg)
+            else:
+                curve = Geom_BSplineCurve(P, K, M, deg)
+            e = BRepBuilderAPI_MakeEdge(curve).Edge()
+        else:
+            raise ValueError(f'unknown curve kind {kind!r}')
+        seq.Append(e)
+    wires_seq = ShapeAnalysis_FreeBounds.ConnectEdgesToWires_s(seq, float(join), False)
+    wires = []
+    for i in range(1, wires_seq.Length() + 1):
+        w = TopoDS.Wire(wires_seq.Value(i))
+        fx = ShapeFix_Wire()
+        fx.Load(w)
+        fx.SetPrecision(float(join))
+        fx.FixConnected(float(join))
+        fx.FixClosed(float(join))
+        w = fx.Wire()
+        if w.Closed() if hasattr(w, 'Closed') else True:
+            wires.append(w)
+    return wires_to_faces(wires, largest)
+
+
+def wires_to_faces(wires, largest=False):
+    """Faces on the xy plane from closed wires, by the even-odd rule: a wire inside an odd
+    count of other wires is a hole of the wire just outside it. The direction of a wire
+    does not matter. largest=True: only the face of the largest wire, with no holes."""
+    # a face on the xy plane for each wire, with a positive area
+    def face_of(w):
+        f = BRepBuilderAPI_MakeFace(_XY, w, True).Face()
+        if area2d(f) < 0:
+            f = BRepBuilderAPI_MakeFace(_XY, TopoDS.Wire(w.Reversed()), True).Face()
+        return f
+    fs = []
+    for w in wires:
+        try:
+            f = face_of(w)
+        except Exception:
+            continue
+        if abs(area2d(f)) > 1e-9:
+            fs.append((w, f, area2d(f)))
+    if not fs:
+        return None
+    if largest:
+        return max(fs, key=lambda x: x[2])[1]
+    # even-odd: the depth of each wire is the count of other faces that hold a point of it
+    def point_of(w):
+        e = _explore(w, TopAbs_EDGE)[0]
+        c = BRepAdaptor_Curve(TopoDS.Edge(e))
+        p = c.Value((c.FirstParameter() + c.LastParameter()) / 2)
+        return p
+    depth = []
+    for i, (w, f, a) in enumerate(fs):
+        p = point_of(w)
+        d = 0
+        for j, (w2, f2, a2) in enumerate(fs):
+            if j != i and a2 > a:
+                cl = BRepClass_FaceClassifier(f2, p, 1e-7)
+                d += cl.State() == TopAbs_IN
+        depth.append(d)
+    out = []
+    for i, (w, f, a) in enumerate(fs):
+        if depth[i] % 2:
+            continue
+        mk = BRepBuilderAPI_MakeFace(TopoDS.Face(f))
+        for j, (w2, f2, a2) in enumerate(fs):
+            if depth[j] == depth[i] + 1:
+                cl = BRepClass_FaceClassifier(f, point_of(w2), 1e-7)
+                if cl.State() == TopAbs_IN:
+                    hole = _explore(f2, TopAbs_WIRE)[0]
+                    mk.Add(TopoDS.Wire(hole.Reversed()))
+        out.append(mk.Face())
+    return out[0] if len(out) == 1 else compound(out)
+
+
 def circle(r):
     from OCP.gp import gp_Circ
     c = gp_Circ(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), float(r))
@@ -463,34 +589,47 @@ def _wire_edges(w):
     return out
 
 
+def _offset_wire(w, delta, kind):
+    """The faces of one closed wire (filled) grown by delta (or shrunk, if negative).
+    A shrink can split the outline into many parts, and a grow can close a gap into a
+    hole, so the result wires are sorted into faces by the even-odd rule."""
+    f = BRepBuilderAPI_MakeFace(_XY, w, True).Face()
+    if area2d(f) < 0:
+        f = BRepBuilderAPI_MakeFace(_XY, TopoDS.Wire(w.Reversed()), True).Face()
+    mk = BRepOffsetAPI_MakeOffset(f, kind)
+    mk.Perform(float(delta))
+    if not mk.IsDone():
+        raise ValueError('exact offset failed')
+    ws = [TopoDS.Wire(x) for x in _explore(mk.Shape(), TopAbs_WIRE)]
+    return wires_to_faces(ws) if ws else None
+
+
 def offset2d(shape, delta, join='round'):
-    """Grow (delta > 0) or shrink the 2D shape. join is 'round' (arcs) or 'miter'."""
-    out = []
+    """Grow (delta > 0) or shrink the 2D shape. join is 'round' (arcs) or 'miter'.
+
+    Each outline and each hole is offset alone (OpenCascade fails on a face with holes):
+    the result is the outline offset by delta, less each hole offset by -delta."""
+    kind = GeomAbs_Arc if join == 'round' else GeomAbs_Intersection
+    out = None
     for f in faces(shape):
-        mk = BRepOffsetAPI_MakeOffset(f, GeomAbs_Arc if join == 'round' else GeomAbs_Intersection)
-        mk.Perform(float(delta))
-        if not mk.IsDone():
-            raise ValueError('exact offset failed')
-        res = mk.Shape()
-        ws = [TopoDS.Wire(w) for w in _explore(res, TopAbs_WIRE)]
-        if not ws:
+        outer = _outer_wire(f)
+        body = _offset_wire(outer, delta, kind)
+        if body is None:
             continue
-        # the new outline is the wire of the largest area; the others are holes.
-        # The direction of each wire sets the side of the face: an outline must give a
-        # positive area on the xy plane, and a hole a negative one.
-        def signed(w):
-            return area2d(BRepBuilderAPI_MakeFace(_XY, w, True).Face())
+        for w in _explore(f, TopAbs_WIRE):
+            w = TopoDS.Wire(w)
+            if w.IsSame(outer):
+                continue
+            hole = _offset_wire(w, -delta, kind)
+            if hole is not None:
+                body, _ = boolean(body, hole, '-')
+        out = body if out is None else boolean(out, body, '+')[0]
+    return out
 
-        def turned(w, positive):
-            return w if (signed(w) > 0) == positive else TopoDS.Wire(w.Reversed())
 
-        k = int(np.argmax([abs(signed(w)) for w in ws]))
-        mk2 = BRepBuilderAPI_MakeFace(_XY, turned(ws[k], True), True)
-        for i, w in enumerate(ws):
-            if i != k:
-                mk2.Add(turned(w, False))
-        out.append(mk2.Face())
-    return None if not out else out[0] if len(out) == 1 else compound(out)
+def _outer_wire(face):
+    from OCP.BRepTools import BRepTools
+    return BRepTools.OuterWire_s(face)
 
 
 def extrude(shape, h):
