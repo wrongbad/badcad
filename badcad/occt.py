@@ -622,6 +622,28 @@ def offset3d(shape, r):
     return off.Shape()
 
 
+def hull_points(points):
+    """The convex hull of 3D points, as an exact solid with flat faces."""
+    from scipy.spatial import ConvexHull
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing, BRepBuilderAPI_MakeSolid
+    from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
+    h = ConvexHull(points)
+    sew = BRepBuilderAPI_Sewing(1e-7)
+    centre = points[h.vertices].mean(axis=0)
+    for tri, eq in zip(h.simplices, h.equations):
+        a, b, c = points[tri]
+        if np.dot(np.cross(b - a, c - a), eq[:3]) < 0:      # the outward winding
+            b, c = c, b
+        w = BRepBuilderAPI_MakePolygon(gp_Pnt(*a), gp_Pnt(*b), gp_Pnt(*c), True).Wire()
+        sew.Add(BRepBuilderAPI_MakeFace(w, True).Face())
+    sew.Perform()
+    shell = TopoDS.Shell(_explore(sew.SewedShape(), TopAbs_SHELL)[0])
+    solid = BRepBuilderAPI_MakeSolid(shell).Solid()
+    u = ShapeUpgrade_UnifySameDomain(solid, True, True, True)     # the triangles of one plane: one face
+    u.Build()
+    return u.Shape()
+
+
 # --- edges and fillets ---------------------------------------------------------------------------
 
 def _normal(face, pnt):

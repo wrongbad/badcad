@@ -352,6 +352,8 @@ class Solid:
         return self.manifold.get_tolerance()
 
     def refine(self, n=2):
+        if self.occ is not None:
+            return self         # an exact solid has no triangles to split
         return Solid(self.manifold.refine(n))
 
     def rotate(self, x=0, y=0, z=0, origin=None):
@@ -368,6 +370,8 @@ class Solid:
         """Remove vertices that move no surface more than `tolerance` (mm):
         the extra edges that booleans and refine() leave on flat faces.
         With 0, use the tolerance of the solid (see precision())."""
+        if self.occ is not None:
+            return self         # an exact solid has no extra triangle edges
         return Solid(self.manifold.simplify(tolerance))
 
     def project(self):
@@ -408,13 +412,29 @@ class Solid:
         o = np.array(origin, dtype=float)
         rot = np.stack([u, v, n])
         m = np.column_stack([rot, -rot @ o])
-        return Shape(self.manifold.transform(m).slice(0))
+        return self.transform(m).slice(0) if self.occ is not None else Shape(self.manifold.transform(m).slice(0))
 
     def split(self, cutter):
+        if _exact(self, cutter):
+            return self & cutter, self - cutter
         inter, diff = self.manifold.split(cutter.manifold)
         return Solid(inter), Solid(diff)
 
+    def _half_space(self, x, y, z, offset):
+        # the exact half space on the side that the normal (x, y, z) points to, from the plane
+        # at distance offset along the unit normal (as manifold3d), big enough to hold the solid
+        n = np.array([x, y, z], dtype=float)
+        k = np.linalg.norm(n)
+        n /= k
+        b = np.array(self.bounding_box(), dtype=float)
+        size = 4 * (np.linalg.norm(b[3:] - b[:3]) + np.abs(b).max() + abs(offset) + 1)
+        box = cube(size, size, size).move(-size / 2, -size / 2, 0)
+        return box.orient(tuple(n), origin=tuple(n * offset))
+
     def split_by_plane(self, x=0, y=0, z=0, offset=0):
+        if self.occ is not None:
+            h = self._half_space(x, y, z, offset)
+            return self & h, self - h
         top, bottom = self.manifold.split_by_plane((x, y, z), offset)
         return Solid(top), Solid(bottom)
 
@@ -453,9 +473,11 @@ class Solid:
         x /= np.linalg.norm(x)
         y = np.cross(z, x)
         m = np.column_stack([x, y, z, np.array(origin, dtype=float)])
-        return Solid(self.manifold.transform(m))
+        return self.transform(m)
     
     def trim_by_plane(self, x=0, y=0, z=0, offset=0):
+        if self.occ is not None:
+            return self & self._half_space(x, y, z, offset)
         return Solid(self.manifold.trim_by_plane((x, y, z), offset))
 
     def warp(self, xyz_map_fn):
@@ -465,6 +487,8 @@ class Solid:
         return Solid(self.manifold.warp_batch(xyz_map_fn))
 
     def refine_to_length(self, edge_len):
+        if self.occ is not None:
+            return self         # an exact solid has no triangles to split
         m = self.manifold.to_mesh()
         verts = m.vert_properties.tolist()
         tris = m.tri_verts.tolist()
@@ -852,6 +876,8 @@ class Shape:
         return Shape(self.cross_section.scale((x, y)))
 
     def simplify(self, eps):
+        if self.occ is not None:
+            return self         # exact curves have no extra polygon points
         return Shape(self.cross_section.simplify(eps))
 
     def to_polygons(self):
@@ -944,6 +970,9 @@ def hull(*solids):
     return Solid(Manifold.batch_hull(mans))
 
 def hull_points(points):
+    if _ENGINE == 'occt':
+        # the hull of points has only flat faces: exact
+        return Solid(occ=_occt().hull_points(np.asarray(points, dtype=float)))
     return Solid(Manifold.hull_points(points))
 
 def hull2d(*shapes):
@@ -951,6 +980,10 @@ def hull2d(*shapes):
     return Shape(CrossSection.batch_hull(sects))
 
 def hull2d_points(points):
+    if _ENGINE == 'occt':
+        from scipy.spatial import ConvexHull
+        pts = np.asarray(points, dtype=float)
+        return polygons([pts[ConvexHull(pts).vertices]])
     return Shape(CrossSection.hull_points(points))
 
 def cube(x=1, y=1, z=1, center=False):
