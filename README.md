@@ -10,6 +10,8 @@ this project aims to focus on usability in a jupyter environment
 
 specifically for creating and exporting functional parts
 
+also the pythonic API turns out to be extremely effective for AI agents to build 3d models
+
 # setup
 
 ```bash
