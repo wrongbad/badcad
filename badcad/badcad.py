@@ -520,6 +520,45 @@ def set_min_circular_angle(degrees):
 def set_min_circular_edge_length(length):
     manifold3d.set_min_circular_edge_length(length)
 
+def _flat(items):
+    # accept union(a, b, c) and union([a, b, c])
+    if len(items) == 1 and isinstance(items[0], (list, tuple)):
+        items = items[0]
+    return [x for x in items if not x.is_empty()]
+
+def _batch(items, op):
+    items = _flat(items)
+    if not items:
+        return Solid()
+    if isinstance(items[0], Shape):
+        return Shape(CrossSection.batch_boolean([s.cross_section for s in items], op))
+    return Solid(Manifold.batch_boolean([s.manifold for s in items], op))
+
+def union(*items):
+    """Join many Solids (or many Shapes) in one batch operation.
+
+    For Shapes, this is much faster than a + b + c + ... in a loop. For
+    Solids the gain is smaller, because manifold already collects a chain
+    of + operations. Give the items as arguments or as one list. Empty items are ignored, and no items give
+    an empty Solid."""
+    return _batch(items, manifold3d.OpType.Add)
+
+def difference(base, *cutters):
+    """Remove many Solids (or many Shapes) from `base` in one batch
+    operation. The cutters can be arguments or one list."""
+    if base.is_empty():
+        return base
+    return _batch([base, *_flat(cutters)], manifold3d.OpType.Subtract)
+
+def intersection(*items):
+    """The volume (or area) common to all the items, in one batch
+    operation. The items can be arguments or one list."""
+    if len(items) == 1 and isinstance(items[0], (list, tuple)):
+        items = items[0]
+    if not items or any(x.is_empty() for x in items):
+        return Shape() if items and isinstance(items[0], Shape) else Solid()
+    return _batch(items, manifold3d.OpType.Intersect)
+
 def hull(*solids):
     mans = [s.manifold for s in solids]
     return Solid(Manifold.batch_hull(mans))
