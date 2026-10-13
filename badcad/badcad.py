@@ -160,7 +160,13 @@ class Solid:
         return Solid(occ=s, tags=t)
 
     def _exact_bool(self, other, kind):
-        s, t = _occt().boolean(self.occ, other.occ, kind, self.tags, other.tags)
+        o = _occt()
+        try:
+            s, t = o.boolean(self.occ, other.occ, kind, self.tags, other.tags)
+        except o.BooleanFailed:
+            # no exact result passed the checks: use the mesh (the result is not exact)
+            op = {'+': '__add__', '-': '__sub__', '&': '__xor__'}[kind]
+            return Solid(getattr(self.manifold, op)(other.manifold))
         return Solid(occ=s, tags=t)
 
     def _exact_xf(self, fn, *args):
@@ -655,7 +661,12 @@ class Shape:
         return self.occ is not None
 
     def _exact_bool(self, other, kind):
-        f, _ = _occt().boolean(self.occ, other.occ, kind)
+        o = _occt()
+        try:
+            f, _ = o.boolean(self.occ, other.occ, kind)
+        except o.BooleanFailed:
+            op = {'+': '__add__', '-': '__sub__', '&': '__xor__'}[kind]
+            return Shape(getattr(self.cross_section, op)(other.cross_section))
         return Shape(occ=f)
 
     def _exact_m(self, m2):

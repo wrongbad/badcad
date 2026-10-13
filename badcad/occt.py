@@ -217,6 +217,12 @@ def transform(shape, m, tags=None):
         g = gp_GTrsf(gp_Mat(*[float(v) for v in a.reshape(-1)]), gp_XYZ(*[float(v) for v in m[:, 3]]))
         op = BRepBuilderAPI_GTransform(shape, g, True)
         s, tg = op.Shape(), carry(tags, op)
+        if not _valid(s):
+            # the B-spline surfaces of a general transform can leave bad tolerances: repair them
+            from OCP.ShapeFix import ShapeFix_Shape
+            fx = ShapeFix_Shape(s)
+            fx.Perform()
+            s = fx.Shape()
     return (s, tg) if tags is not None else s
 
 
@@ -225,20 +231,68 @@ def transform(shape, m, tags=None):
 _OPS = {'+': BRepAlgoAPI_Fuse, '-': BRepAlgoAPI_Cut, '&': BRepAlgoAPI_Common}
 
 
+class BooleanFailed(ValueError):
+    """No exact boolean gave a result that passes the checks."""
+
+
+def _valid(shape):
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    return BRepCheck_Analyzer(shape).IsValid()
+
+
+def _size(shape, solid):
+    return volume(shape) if solid else surface_area(shape)
+
+
+def _plausible(kind, a, b, r, tol):
+    """The size of the result must be possible for the operation (a volume or an area)."""
+    if kind == '+':
+        return max(a, b) - tol <= r <= a + b + tol
+    if kind == '-':
+        return -tol <= r <= a + tol
+    return -tol <= r <= min(a, b) + tol
+
+
 def boolean(a, b, kind, tags_a=None, tags_b=None):
-    """a + b, a - b or a & b. Returns (shape, tags)."""
-    op = _OPS[kind](a, b)
-    if not op.IsDone():
-        raise ValueError(f'exact boolean {kind!r} failed')
-    op.SimplifyResult()          # join the faces on one surface that the boolean split
-    return op.Shape(), merge_tags(carry(tags_a, op), carry(tags_b, op))
+    """a + b, a - b or a & b. Returns (shape, tags).
+
+    OpenCascade can give a wrong result with no error, for example a fuse of two
+    slabs that touch. So the result must be a valid shape, and its volume (or area,
+    for 2D) must be possible for the operation. If not, the boolean runs again with a
+    small fuzzy tolerance. If no try passes, BooleanFailed: the caller then uses the
+    mesh, and the result is not exact."""
+    solid = bool(solids(a)) or bool(solids(b))
+    va, vb = _size(a, solid), _size(b, solid)
+    tol = 1e-6 * max(1.0, va + vb)
+    for fuzzy in (0.0, 1e-6, 1e-5, 1e-4):
+        op = _OPS[kind]()
+        from OCP.collections import List_TopoDS_Shape as TopTools_ListOfShape
+        la, lb = TopTools_ListOfShape(), TopTools_ListOfShape()
+        la.Append(a)
+        lb.Append(b)
+        op.SetArguments(la)
+        op.SetTools(lb)
+        if fuzzy:
+            op.SetFuzzyValue(fuzzy)
+        op.Build()
+        if not op.IsDone():
+            continue
+        op.SimplifyResult()          # join the faces on one surface that the boolean split
+        r = op.Shape()
+        if _valid(r) and _plausible(kind, va, vb, _size(r, solid), tol):
+            return r, merge_tags(carry(tags_a, op), carry(tags_b, op))
+    raise BooleanFailed(f'exact boolean {kind!r}: no result passed the checks')
 
 
 # --- properties ----------------------------------------------------------------------------------
 
 def volume(shape):
+    """The volume, to a relative precision of 1e-9 (the default is coarse on B-spline faces)."""
     p = GProp_GProps()
-    BRepGProp.VolumeProperties_s(shape, p)
+    try:
+        BRepGProp.VolumeProperties_s(shape, p, 1e-9, False)
+    except TypeError:
+        BRepGProp.VolumeProperties_s(shape, p)
     return p.Mass()
 
 
@@ -304,9 +358,18 @@ def write_step(shape, filename):
 # --- 2D: faces in the xy plane -------------------------------------------------------------------
 
 def _wire(points, z=0.0):
+    """A closed polygon wire. Repeated points (a point equal to the one before it, or a last
+    point equal to the first) are left out: they make an edge of zero length."""
+    pts = [(float(x), float(y)) for x, y in points]
+    clean = []
+    for q in pts:
+        if not clean or abs(q[0] - clean[-1][0]) + abs(q[1] - clean[-1][1]) > 1e-9:
+            clean.append(q)
+    while len(clean) > 1 and abs(clean[0][0] - clean[-1][0]) + abs(clean[0][1] - clean[-1][1]) <= 1e-9:
+        clean.pop()
     p = BRepBuilderAPI_MakePolygon()
-    for x, y in points:
-        p.Add(gp_Pnt(float(x), float(y), z))
+    for x, y in clean:
+        p.Add(gp_Pnt(x, y, z))
     p.Close()
     return p.Wire()
 
