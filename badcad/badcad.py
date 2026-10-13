@@ -1,5 +1,5 @@
 import manifold3d
-from manifold3d import Manifold, CrossSection, Mesh
+from manifold3d import Manifold, CrossSection, Mesh, Error
 import numpy as np
 import io
 import zipfile
@@ -166,8 +166,14 @@ class Solid:
         # solids that overlap): each exact try must give about the volume of the same
         # boolean on the meshes
         m = getattr(self.manifold, op)(other.manifold)
+        if self.manifold.status() != Error.NoError or other.manifold.status() != Error.NoError:
+            # the mesh of an input is broken: nothing can check the exact result (2026-10: a
+            # cut that removed nothing passed the other checks), and the STL of the mesh
+            # result is wrong too. A wrong part is worse than no part.
+            raise ValueError('exact boolean: the mesh of an input is broken (not a closed manifold)')
         try:
-            s, t = o.boolean(self.occ, other.occ, kind, self.tags, other.tags, expect=m.volume())
+            s, t = o.boolean(self.occ, other.occ, kind, self.tags, other.tags,
+                             expect=(m.volume(), self.manifold.volume()))
         except o.BooleanFailed:
             return Solid(m)         # no exact try matched: the result is not exact
         return Solid(occ=s, tags=t)
@@ -689,7 +695,7 @@ class Shape:
         op = {'+': '__add__', '-': '__sub__', '&': '__xor__'}[kind]
         m = getattr(self.cross_section, op)(other.cross_section)        # the same check, with areas
         try:
-            f, _ = o.boolean(self.occ, other.occ, kind, expect=m.area())
+            f, _ = o.boolean(self.occ, other.occ, kind, expect=(m.area(), self.cross_section.area()))
         except o.BooleanFailed:
             return Shape(m)
         return Shape(occ=f)
@@ -711,6 +717,37 @@ class Shape:
         if self.occ is None:
             raise ValueError('evolve() needs an exact Shape (the occt engine)')
         return Solid(occ=_occt().evolved(self.occ, profile, round_r, join))
+
+    def round_top(self, r, height=None, walls=None):
+        """An exact solid (occt): the outline extruded by height (r if None), with
+        a true fillet of radius r on each top edge. Each convex corner of the
+        outline must have a radius of more than r. walls (a Shape): only the top
+        edges on the outline of walls get the fillet. Raises ValueError if the
+        fillet fails."""
+        if self.occ is None:
+            raise ValueError('round_top() needs an exact Shape (the occt engine)')
+        return Solid(occ=_occt()._round_top(self.occ, float(r), height,
+                                            None if walls is None else walls.occ))
+
+    def round_top_variable(self, rmax, height):
+        """An exact solid (occt): the outline extruded by height, with a fillet on the
+        top edges whose radius is rmax where it fits and smaller where the outline is
+        narrow or has a small convex corner, with no step (occt.round_top_variable).
+        Raises ValueError if the fillet fails."""
+        if self.occ is None:
+            raise ValueError('round_top_variable() needs an exact Shape (the occt engine)')
+        return Solid(occ=_occt().round_top_variable(self.occ, float(rmax), float(height)))
+
+    def inset_loft(self, profile, levels=37):
+        """An exact solid (occt) whose section at the height z is this outline inset
+        by d, for (z, d) = profile(u), u from 0 to 1: for example a round with a radius
+        larger than a convex corner, which a fillet can not make (the corner goes away).
+        The sides are ruled bands between exact insets at `levels` values of u,
+        checked against the volume of the true solid (see occt.inset_loft). Raises
+        ValueError if it fails."""
+        if self.occ is None:
+            raise ValueError('inset_loft() needs an exact Shape (the occt engine)')
+        return Solid(occ=_occt().inset_loft(self.occ, profile, levels))
 
     def _repr_mimebundle_(self, **kwargs):
         # called by jupyter to figure out how to display this object
@@ -1296,11 +1333,18 @@ def compose(solids):
         return Solid(occ=o.compound([x.occ for x in solids]), tags=o.merge_tags(*[x.tags for x in solids]))
     return Solid(Manifold.compose([s.manifold for s in solids]))
 
-def polygons(loops, fill_rule='even_odd'):
+def polygons(loops, fill_rule='even_odd', smooth=False):
     """A Shape from many outlines (lists of (x, y) points). fill_rule is
     the same as for polygon(): with 'even_odd', a loop inside another loop
-    is a hole."""
+    is a hole. smooth=True (occt engine only, even-odd): a dense loop that
+    stands for a curve becomes smooth splines within 0.005 mm of its points,
+    with its sharp corners kept (occt.fit_polyline). The manifold engine
+    ignores smooth."""
     if _ENGINE == 'occt':
+        if smooth:
+            o = _occt()
+            f = o.wires_to_faces([w for w in (o.poly_wire(l) for l in loops if len(l) >= 3) if w is not None])
+            return Shape(occ=f) if f is not None else Shape()
         f = _occt().polygons(loops)
         return Shape(occ=f) if f is not None else Shape()
     return Shape(CrossSection(loops, fillrule=_fill_rule(fill_rule)))
