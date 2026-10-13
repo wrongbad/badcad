@@ -11,6 +11,7 @@ This document describes every public class, method, and function in badcad.
 - [2D primitives](#2d-primitives)
 - [Solid](#solid)
 - [Shape](#shape)
+- [More ways to make a Solid](#more-ways-to-make-a-solid)
 - [Hulls](#hulls)
 - [Threads](#threads)
 - [Import and export](#import-and-export)
@@ -154,6 +155,16 @@ Returns a `Shape` from one contour. `points` is a list or an array of (x, y) poi
 | `'negative'` | an area that the contour goes around clockwise |
 
 A different value raises `ValueError`.
+
+### `polygons(loops, fill_rule='even_odd')`
+
+Returns a `Shape` from many contours. Each loop is a list or an array of (x, y) points. `fill_rule` is the same as for `polygon()`. With `'even_odd'`, a loop inside another loop is a hole.
+
+```python
+outer = [(0, 0), (10, 0), (10, 10), (0, 10)]
+inner = [(2, 2), (8, 2), (8, 8), (2, 8)]
+frame = polygons([outer, inner])        # area 64
+```
 
 ### `text(t, size=10, font="Helvetica", fn=8)`
 
@@ -371,8 +382,12 @@ A warp moves only the vertices. First use `refine_to_length()`, so that there ar
 | Method | Returns |
 |---|---|
 | `bounding_box()` | `(xmin, ymin, zmin, xmax, ymax, zmax)` |
-| `get_volume()` | the volume |
-| `get_surface_area()` | the surface area |
+| `volume()` | the volume |
+| `surface_area()` | the surface area |
+| `get_volume()` | the volume. This is the same as `volume()`. |
+| `get_surface_area()` | the surface area. This is the same as `surface_area()`. |
+| `slice(z=0)` | the cut at the height `z`, as a `Shape`. This is the same as `cross_section(solid, z)`. |
+| `mesh_arrays()` | the mesh as two numpy arrays: the vertices (N×3) and the vertex indices of each triangle (M×3) |
 | `genus()` | the number of through holes. A cube is 0, and a ring is 1. |
 | `is_empty()` | `True` if the solid has no material |
 | `num_vert()` | the number of vertices |
@@ -547,6 +562,25 @@ ring = square(2, 5).move(10, 0).revolve()
 | `num_contour()` | the number of contours, including holes |
 | `num_vert()` | the number of vertices |
 | `to_polygons()` | a list of N×2 arrays, one for each contour |
+
+## More ways to make a Solid
+
+### `compose(solids)`
+
+Returns one `Solid` that holds all the `solids` as separate bodies. It does no boolean operation, so it is fast. The bodies must not overlap.
+
+### `mesh(verts, tris, merge=True, check=True, dtype=np.float64)`
+
+Makes a `Solid` from a triangle mesh. `verts` is an N×3 array of points, and `tris` is an M×3 array of vertex indices. A mesh that is not a closed manifold raises `ValueError`.
+
+- `merge=True` joins the vertices that have the same position. Thus a mesh with duplicate vertices (one set for each triangle, as in STL) closes.
+- `check=True` turns over a mesh that winds clockwise (seen from outside). `check=False` keeps the winding as it is, and does not calculate the volume.
+- `dtype=np.float32` keeps the points in single precision, as STL and 3MF files do. A different `dtype` than `np.float32` or `np.float64` raises `ValueError`.
+
+```python
+verts, tris = part.mesh_arrays()
+copy = mesh(verts, tris)
+```
 
 ## Hulls
 

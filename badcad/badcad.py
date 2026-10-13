@@ -128,6 +128,25 @@ class Solid:
     def get_volume(self):
         return self.manifold.volume()
 
+    def volume(self):
+        """The volume of the solid (mm^3)."""
+        return self.manifold.volume()
+
+    def surface_area(self):
+        """The surface area of the solid (mm^2)."""
+        return self.manifold.surface_area()
+
+    def slice(self, z=0):
+        """The cut of the solid at height z, as a Shape. The same as
+        cross_section(solid, z)."""
+        return Shape(self.manifold.slice(z))
+
+    def mesh_arrays(self):
+        """The triangle mesh of the solid as two numpy arrays: the vertex
+        positions (N, 3) and the vertex indices of each triangle (M, 3)."""
+        m = self.manifold.to_mesh()
+        return np.asarray(m.vert_properties)[:, :3], np.asarray(m.tri_verts)
+
     def hull(self, *others):
         return Solid(Manifold.batch_hull([self.manifold, *[o.manifold for o in others]]))
 
@@ -650,7 +669,7 @@ def circle(d=1, r=None, fn=0, outer=False):
 def square(x=1, y=1, center=False):
     return Shape(CrossSection.square((x, y), center=center))
 
-def polygon(points, fill_rule='even_odd'):
+def _fill_rule(fill_rule):
     if fill_rule == 'even_odd':
         fill_rule = manifold3d.FillRule.EvenOdd
     elif fill_rule == 'negative':
@@ -661,7 +680,10 @@ def polygon(points, fill_rule='even_odd'):
         fill_rule = manifold3d.FillRule.Positive
     else:
         raise ValueError(f'{fill_rule=}')
-    return Shape(CrossSection([points], fillrule=fill_rule))
+    return fill_rule
+
+def polygon(points, fill_rule='even_odd'):
+    return Shape(CrossSection([points], fillrule=_fill_rule(fill_rule)))
 
 def cross_section(solid, z=0):
     return Shape(solid.manifold.slice(z))
@@ -821,25 +843,46 @@ def threads(d=8, h=8, pitch=1, depth_ratio=0.6, trap_scale=1, starts=1, fn=0, pi
     return m if lefty else m.mirror(x=1)
 
 
-def mesh(verts, tris, merge=True):
+def compose(solids):
+    """One Solid that holds the given Solids as separate bodies, with no
+    boolean between them. This is fast, but the bodies must not overlap."""
+    return Solid(Manifold.compose([s.manifold for s in solids]))
+
+def polygons(loops, fill_rule='even_odd'):
+    """A Shape from many outlines (lists of (x, y) points). fill_rule is
+    the same as for polygon(): with 'even_odd', a loop inside another loop
+    is a hole."""
+    return Shape(CrossSection(loops, fillrule=_fill_rule(fill_rule)))
+
+def mesh(verts, tris, merge=True, check=True, dtype=np.float64):
     """A Solid from a triangle mesh: verts is an (N, 3) array of points and
     tris an (M, 3) array of vertex indices.
 
     With merge=True, vertices at the same position are joined first, so a
     mesh with duplicate vertices (one set for each triangle, as in STL)
-    still closes. If the triangles wind clockwise (seen from outside), the
-    winding is turned over. Raises ValueError if the mesh is not a closed
-    manifold."""
-    v = np.ascontiguousarray(np.asarray(verts, dtype=np.float64)[:, :3])
-    t = np.ascontiguousarray(np.asarray(tris, dtype=np.uint64))
-    m = manifold3d.Mesh64(vert_properties=v, tri_verts=t)
+    still closes. A mesh that is not a closed manifold raises ValueError.
+    With check=True, a mesh that winds clockwise (seen from outside) is
+    turned over. check=False keeps the winding as it is, and does not
+    calculate the volume. dtype=np.float32 stores the points in single
+    precision, as STL and 3MF files do."""
+    if np.dtype(dtype) == np.float32:
+        make, ttype = manifold3d.Mesh, np.uint32
+    elif np.dtype(dtype) == np.float64:
+        make, ttype = manifold3d.Mesh64, np.uint64
+    else:
+        raise ValueError(f'{dtype=}: use np.float32 or np.float64')
+    v = np.array(np.asarray(verts, dtype=dtype)[:, :3], order="C")
+    t = np.array(tris, dtype=ttype, order="C")
+    m = make(vert_properties=v, tri_verts=t)
     if merge:
         m.merge()
     solid = Manifold(m)
+    if not check:
+        return Solid(solid)
     if solid.status() != manifold3d.Error.NoError:
         raise ValueError(f'mesh is not a closed manifold: {solid.status().name}')
     if solid.volume() < 0:
-        m = manifold3d.Mesh64(vert_properties=v, tri_verts=np.ascontiguousarray(t[:, ::-1]))
+        m = make(vert_properties=v, tri_verts=np.ascontiguousarray(t[:, ::-1]))
         if merge:
             m.merge()
         solid = Manifold(m)
