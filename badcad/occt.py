@@ -1222,7 +1222,7 @@ def _at_length(c, u, ln):
     return GCPnts_AbscissaPoint(GeomAdaptor_Curve(c), float(ln), float(u)).Parameter()
 
 
-def _compatible(wa, wb, eps=1e-4):
+def _compatible(wa, wb, eps=1e-5):
     """The two closed wires of two insets of one outline, with the same edge count. Where
     edges of one wire shrink to a corner of the other (a convex arc that an inset removes),
     the corner gets the same count of very small edges (eps mm, about the corner)."""
@@ -1708,11 +1708,20 @@ def round_top_variable(face, rmax, height, share=0.85, rmin=0.2, slope=0.3, samp
     wire_data = []
     for w in wires:
         parts = _wire_parts(w)
-        pts, tans, svals, s0 = [], [], [], 0.0
+        pts, tans, svals, caps, s0 = [], [], [], [], 0.0
+        from shapely.geometry import Point
+        from OCP.GeomAbs import GeomAbs_Circle
         for c, ua, ub in parts:
             e = _part_edge(c, ua, ub)
             ln = edge_length(e)
             n = max(2, int(math.ceil(ln / sample)) + 1)
+            # a convex arc (its centre inside the outline): the ball must be smaller than it
+            cap = rmax
+            ad = BRepAdaptor_Curve(e)
+            if ad.GetType() == GeomAbs_Circle:
+                ci = ad.Circle()
+                if poly.contains(Point(ci.Location().X(), ci.Location().Y())):
+                    cap = share * ci.Radius()
             for k in range(n - 1):
                 u = _at_length(c, ua, (ln * k / (n - 1)) * (1.0 if ub > ua else -1.0)) if k else ua
                 pnt, vec = gp_Pnt(), gp_Vec()
@@ -1721,10 +1730,11 @@ def round_top_variable(face, rmax, height, share=0.85, rmin=0.2, slope=0.3, samp
                 pts.append((pnt.X(), pnt.Y()))
                 tans.append(tv / np.hypot(*tv))
                 svals.append(s0 + ln * k / (n - 1))
+                caps.append(cap)
             s0 += ln
         total = s0
-        raw = np.array([max(rmin, min(rmax, share * _clearance(poly, np.array(p_), t_, rmax)))
-                        for p_, t_ in zip(pts, tans)])
+        raw = np.array([max(rmin, min(rmax, cap_, share * _clearance(poly, np.array(p_), t_, rmax)))
+                        for p_, t_, cap_ in zip(pts, tans, caps)])
         sv = np.array(svals)
         # the lower envelope with the slope limit (periodic: the wire is closed)
         d = np.abs(sv[:, None] - sv[None, :])
@@ -1781,7 +1791,16 @@ def round_top_variable(face, rmax, height, share=0.85, rmin=0.2, slope=0.3, samp
         mk.SetRadius(arr, ic, ii)
     def build():
         mk.Build()
-        return _valid_or_fixed(mk.Shape()) if mk.IsDone() else None
+        if not mk.IsDone():
+            bad = []
+            for k in range(1, mk.NbFaultyContours() + 1):
+                ic = mk.FaultyContour(k)
+                e = mk.Edge(ic, 1)
+                c = BRepAdaptor_Curve(e)
+                p = c.Value(c.FirstParameter())
+                bad.append(f'contour {ic} ({mk.NbEdges(ic)} edges, {mk.StripeStatus(ic)}) at ({p.X():.1f}, {p.Y():.1f})')
+            raise ValueError('variable round: the fillet failed: ' + '; '.join(bad))
+        return _valid_or_fixed(mk.Shape())
     # in a child process: the fillet can crash OpenCascade (2026-10: a segmentation fault
     # on a Rich pocket outline), and a crash must not stop the model build
     try:
