@@ -738,6 +738,16 @@ class Shape:
             raise ValueError('round_top_variable() needs an exact Shape (the occt engine)')
         return Solid(occ=_occt().round_top_variable(self.occ, float(rmax), float(height)))
 
+    def ball_sweep(self, r):
+        """An exact solid (occt): the space that the upper half of a ball of radius r
+        sweeps when its centre moves on this outline, from z = 0 up to r. On an outline
+        inset by r, it is a pocket with a round top edge of radius r where the ball fits
+        (occt.ball_sweep). The outline must have lines and arcs only. Raises ValueError if
+        it fails."""
+        if self.occ is None:
+            raise ValueError('ball_sweep() needs an exact Shape (the occt engine)')
+        return Solid(occ=_occt().ball_sweep(self.occ, float(r)))
+
     def inset_loft(self, profile, levels=37):
         """An exact solid (occt) whose section at the height z is this outline inset
         by d, for (z, d) = profile(u), u from 0 to 1: for example a round with a radius

@@ -1835,6 +1835,143 @@ def ruled_loft(rings, heights):
     return ts.Shape()
 
 
+def _half_disk(c, n, r):
+    """A face: the half disk of radius r in the vertical plane through c with the
+    horizontal normal n, above z = c.z."""
+    u = np.array([-n[1], n[0], 0.0])
+    up = np.array([0.0, 0.0, 1.0])
+    a, b = c + r * u, c - r * u
+    arc = GC_MakeArcOfCircle(gp_Pnt(*a), gp_Pnt(*(c + r * up)), gp_Pnt(*b)).Value()
+    w = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(arc).Edge(),
+                                BRepBuilderAPI_MakeEdge(gp_Pnt(*b), gp_Pnt(*a)).Edge()).Wire()
+    return BRepBuilderAPI_MakeFace(w, True).Face()
+
+
+def _turn_disk(c, axis, r):
+    """The half disk of radius r around c in the vertical plane through c and the vertical
+    axis at axis, only on the side of c (a turn of it around the axis does not cross it)."""
+    d = c[:2] - axis[:2]
+    rho = float(np.linalg.norm(d))
+    d = np.array([*(d / rho), 0.0])
+    up = np.array([0.0, 0.0, 1.0])
+    if rho > r * (1.0 + 1e-6):
+        return _half_disk(c, np.array([-d[1], d[0], 0.0]), r)
+    near, far = c - rho * d, c + r * d               # near is on the axis
+    if rho >= r * (1.0 - 1e-6):
+        # the disk touches the axis at one point: an inside corner of the outline that an
+        # inset by r made an arc of radius r (the solid is a torus with no hole)
+        arc = GC_MakeArcOfCircle(gp_Pnt(*far), gp_Pnt(*(c + r * up)), gp_Pnt(*near)).Value()
+        w = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(arc).Edge(),
+                                    BRepBuilderAPI_MakeEdge(gp_Pnt(*near), gp_Pnt(*far)).Edge()).Wire()
+        return BRepBuilderAPI_MakeFace(w, True).Face()
+    top = near + math.sqrt(r * r - rho * rho) * up    # where the circle crosses the axis
+    phi = math.acos(-rho / r)
+    mid = c + r * (math.cos(phi / 2) * d + math.sin(phi / 2) * up)
+    arc = GC_MakeArcOfCircle(gp_Pnt(*far), gp_Pnt(*mid), gp_Pnt(*top)).Value()
+    w = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(arc).Edge(),
+                                BRepBuilderAPI_MakeEdge(gp_Pnt(*top), gp_Pnt(*near)).Edge(),
+                                BRepBuilderAPI_MakeEdge(gp_Pnt(*near), gp_Pnt(*far)).Edge()).Wire()
+    return BRepBuilderAPI_MakeFace(w, True).Face()
+
+
+def _edge_ends(e):
+    """The ends, the end tangents (along the wire) and, for an arc, the centre and the signed
+    angle (+: counter-clockwise seen from +z) of an edge in a wire."""
+    from OCP.GeomAbs import GeomAbs_Circle
+    c = BRepAdaptor_Curve(e)
+    u0, u1 = c.FirstParameter(), c.LastParameter()
+    rev = e.Orientation() == TopAbs_REVERSED
+    v0, v1, q = gp_Vec(), gp_Vec(), gp_Pnt()
+    c.D1(u0, q, v0)
+    p0 = np.array([q.X(), q.Y(), q.Z()])
+    c.D1(u1, q, v1)
+    p1 = np.array([q.X(), q.Y(), q.Z()])
+    t0, t1 = np.array([v0.X(), v0.Y(), v0.Z()]), np.array([v1.X(), v1.Y(), v1.Z()])
+    if rev:
+        p0, p1, t0, t1 = p1, p0, -t1, -t0
+    out = {'arc': c.GetType() == GeomAbs_Circle, 'a': p0, 'b': p1,
+           'ta': t0 / np.linalg.norm(t0), 'tb': t1 / np.linalg.norm(t1)}
+    if out['arc']:
+        loc = c.Circle().Location()
+        out['centre'] = np.array([loc.X(), loc.Y(), loc.Z()])
+        turn = np.cross(p0 - out['centre'], out['ta'])[2]
+        out['angle'] = abs(u1 - u0) if turn > 0 else -abs(u1 - u0)
+    return out
+
+
+def ball_sweep(face, r, corner_deg=1e-3):
+    """The space that the upper half of a ball of radius r sweeps when its centre moves on
+    a planar face (in a plane z = const, with lines and arcs only), from the plane of the face
+    up r. Over a face inset by r, it is the round top edge of a pocket of radius r where the
+    ball fits. It is a prism of the face, a half tube along each edge (a half cylinder on a
+    line, a part of a torus on an arc) and a half sphere at each corner (where the tangent
+    turns more than corner_deg). All faces are planes, cylinders, tori and spheres. With no
+    sphere, a corner of angle a leaves a wedge of the outside between the two tubes, r * a
+    thick at the top (2026-10: 0.07 mm at a 0.45 degree corner of a fitted outline).
+
+    The pieces are joined one at a time, and each join is checked (a valid solid whose volume
+    is between the volume before it and the sum): the pieces touch along their end faces,
+    and one fuse of all of them gave a bad solid (2026-10, the Rich pockets). A join that
+    fails is tried again with a fuzzy value. Raises ValueError if a join still fails, or if
+    an edge is not a line or an arc. A 3D offset (offset3d) and MakeEvolved failed on the
+    same outlines."""
+    from OCP.BRepTools import BRepTools_WireExplorer
+    from OCP.collections import List_TopoDS_Shape
+    up = gp_Dir(0, 0, 1)
+    pieces = []
+    for f in faces(face):
+        pieces.append(BRepPrimAPI_MakePrism(f, gp_Vec(0, 0, float(r))).Shape())
+        for w in _explore(f, TopAbs_WIRE):
+            ex = BRepTools_WireExplorer(TopoDS.Wire(w))
+            ends = []
+            while ex.More():
+                ends.append((ex.Current(), _edge_ends(ex.Current())))
+                ex.Next()
+            for i, (e, s) in enumerate(ends):
+                if np.linalg.norm(s['b'] - s['a']) < 1e-4:
+                    continue                                 # no tube on an edge of no length
+                if s['arc']:
+                    disk = _turn_disk(s['a'], s['centre'], r)
+                    pieces.append(BRepPrimAPI_MakeRevol(disk, gp_Ax1(gp_Pnt(*s['centre']), up), s['angle']).Shape())
+                elif BRepAdaptor_Curve(e).GetType() == 0:     # GeomAbs_Line
+                    t = s['ta'][:2] / np.linalg.norm(s['ta'][:2])
+                    disk = _half_disk(s['a'], np.array([t[0], t[1], 0.0]), r)
+                    pieces.append(BRepPrimAPI_MakePrism(disk, gp_Vec(*(s['b'] - s['a']))).Shape())
+                else:
+                    raise ValueError('ball_sweep: an edge is not a line or an arc')
+                prev = ends[i - 1][1]
+                if math.degrees(math.acos(float(np.clip(np.dot(prev['tb'], s['ta']), -1, 1)))) > corner_deg:
+                    pieces.append(BRepPrimAPI_MakeSphere(gp_Ax2(gp_Pnt(*s['a']), up), float(r), 0.0,
+                                                         math.pi / 2).Shape())
+
+    def fuse(a, b, fuzzy):
+        la, lb = List_TopoDS_Shape(), List_TopoDS_Shape()
+        la.Append(a)
+        lb.Append(b)
+        fu = BRepAlgoAPI_Fuse()
+        fu.SetArguments(la)
+        fu.SetTools(lb)
+        if fuzzy:
+            fu.SetFuzzyValue(fuzzy)
+        fu.Build()
+        if not fu.IsDone():
+            return None
+        fu.SimplifyResult()
+        return fu.Shape()
+
+    acc = pieces[0]
+    for k, p in enumerate(pieces[1:], 1):
+        va, vp = volume(acc), volume(p)
+        for fuzzy in (0.0, 1e-6, 1e-5, 1e-4):
+            nxt = fuse(acc, p, fuzzy)
+            if nxt is not None and _valid(nxt) and va - 1e-3 <= volume(nxt) <= va + vp + 1e-3:
+                acc = nxt
+                break
+        else:
+            raise ValueError(f'ball_sweep: the join of piece {k} of {len(pieces)} failed')
+    return acc
+
+
 def offset3d(shape, r):
     """The Minkowski sum with a sphere of radius r (r > 0), or the erosion (r < 0)."""
     off = BRepOffsetAPI_MakeOffsetShape()
