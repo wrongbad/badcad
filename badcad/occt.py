@@ -1916,7 +1916,6 @@ def ball_sweep(face, r, corner_deg=1e-3):
     an edge is not a line or an arc. A 3D offset (offset3d) and MakeEvolved failed on the
     same outlines."""
     from OCP.BRepTools import BRepTools_WireExplorer
-    from OCP.collections import List_TopoDS_Shape
     up = gp_Dir(0, 0, 1)
     pieces = []
     for f in faces(face):
@@ -1944,6 +1943,17 @@ def ball_sweep(face, r, corner_deg=1e-3):
                     pieces.append(BRepPrimAPI_MakeSphere(gp_Ax2(gp_Pnt(*s['a']), up), float(r), 0.0,
                                                          math.pi / 2).Shape())
 
+    return fuse_all(pieces, 'ball_sweep')
+
+
+def fuse_all(shapes, what='fuse_all'):
+    """The union of the solids, joined one at a time, with a check of each join: a valid
+    solid whose volume is between the volume before it and the sum. A join that fails is
+    tried again with a fuzzy value. For solids that touch along faces of the same geometry
+    (the pieces of a sweep or a loft), where one fuse of all of them or a chain of cuts
+    gave a bad solid. Raises ValueError if a join still fails."""
+    from OCP.collections import List_TopoDS_Shape
+
     def fuse(a, b, fuzzy):
         la, lb = List_TopoDS_Shape(), List_TopoDS_Shape()
         la.Append(a)
@@ -1959,16 +1969,29 @@ def ball_sweep(face, r, corner_deg=1e-3):
         fu.SimplifyResult()
         return fu.Shape()
 
-    acc = pieces[0]
-    for k, p in enumerate(pieces[1:], 1):
+    acc = shapes[0]
+    for k, p in enumerate(shapes[1:], 1):
         va, vp = volume(acc), volume(p)
         for fuzzy in (0.0, 1e-6, 1e-5, 1e-4):
             nxt = fuse(acc, p, fuzzy)
-            if nxt is not None and _valid(nxt) and va - 1e-3 <= volume(nxt) <= va + vp + 1e-3:
+            if nxt is None or not va - 1e-3 <= volume(nxt) <= va + vp + 1e-3:
+                continue
+            try:
+                # a join along faces of the same geometry can have the right volume and fail
+                # only the tolerance checks: ShapeFix (on a copy), then the volume again
+                nxt = _valid_or_fixed(nxt)
+            except ValueError:
+                continue
+            if va - 1e-3 <= volume(nxt) <= va + vp + 1e-3:
                 acc = nxt
                 break
         else:
-            raise ValueError(f'ball_sweep: the join of piece {k} of {len(pieces)} failed')
+            raise ValueError(f'{what}: the join of piece {k} of {len(shapes)} failed')
+    # the mesh of the union must close (the mesh checks of the booleans after it need that).
+    # Only at the end: two pieces can touch along a line only, until a later piece fills the
+    # space around it (the two wedges of a turned section that crosses its axis)
+    if not closed_mesh(acc):
+        raise ValueError(f'{what}: the mesh of the union does not close')
     return acc
 
 
