@@ -175,6 +175,17 @@ class Solid:
             s, t = o.boolean(self.occ, other.occ, kind, self.tags, other.tags,
                              expect=(m.volume(), self.manifold.volume()))
         except o.BooleanFailed:
+            parts = o.solids(other.occ) if kind in ('+', '-') else []
+            if len(parts) > 1:
+                # a tool of separate solids (a round tool in runs) can fail in one boolean
+                # (2026-10, Rich: 20328 mm3 for 4022 mm3) where each solid alone works: one
+                # solid at a time, each with the mesh check of its own boolean
+                acc = self
+                for p in parts:
+                    acc = acc._exact_bool(Solid(occ=p, tags=other.tags), kind)
+                    if acc.occ is None:
+                        return Solid(m)
+                return acc
             return Solid(m)         # no exact try matched: the result is not exact
         return Solid(occ=s, tags=t)
 

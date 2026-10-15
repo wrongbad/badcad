@@ -374,6 +374,10 @@ def boolean(a, b, kind, tags_a=None, tags_b=None, expect=None):
             size = _size(r, solid)
             if _off(size):
                 continue
+        if solid and not closed_mesh(r):
+            # a valid result of the right volume whose mesh has holes (2026-10, Rich: a cut
+            # with a ruled round tool): the next boolean would find its mesh broken
+            continue
         return r, tags
     raise BooleanFailed(f'exact boolean {kind!r}: no result passed the checks')
 
@@ -500,7 +504,36 @@ def mesh(shape):
         v = v[keep]
         t = inv[t]
     t = t[(t[:, 0] != t[:, 1]) & (t[:, 1] != t[:, 2]) & (t[:, 0] != t[:, 2])]
-    return v, t
+    return v, _no_flaps(t)
+
+
+def _no_flaps(t):
+    """The triangles less the pairs on the same three nodes: two with opposite turns are a
+    flap of no volume (the merge of the nodes of very small faces makes them: 2026-10, an
+    edge in 4 triangles at one point of the Rich bottom left), and of two with the same
+    turn one stays."""
+    if len(t) == 0:
+        return t
+    key = np.sort(t, axis=1)
+    _u, inv, cnt = np.unique(key, axis=0, return_inverse=True, return_counts=True)
+    if cnt.max() < 2:
+        return t
+    keep = np.ones(len(t), bool)
+    for g in np.nonzero(cnt > 1)[0]:
+        idx = np.nonzero(inv == g)[0]
+        # the turn of each copy: an even (+1) or odd (-1) permutation of the sorted nodes
+        turns = []
+        for i in idx:
+            a, b, c = t[i]
+            turns.append(1 if (a < b < c or b < c < a or c < a < b) else -1)
+        turns = np.array(turns)
+        plus, minus = idx[turns > 0], idx[turns < 0]
+        n = min(len(plus), len(minus))
+        keep[plus[:n]] = False                 # each pair of opposite copies goes
+        keep[minus[:n]] = False
+        rest = np.concatenate([plus[n:], minus[n:]])
+        keep[rest[1:]] = False                 # of the copies left with one turn, one stays
+    return t[keep]
 
 
 # --- STEP ----------------------------------------------------------------------------------------
