@@ -23,6 +23,11 @@ _CONTAINS_RAYS = [np.array(d, dtype=float) / np.linalg.norm(d) for d in
 # adds jupyter preview & tweaks API
 class Solid:
     def __init__(self, manifold = Manifold()):
+        # Manifold doesn't raise on bad input: it returns a manifold in an error
+        # state, and every boolean with it silently comes back empty
+        # (cube(20,20,20) + cylinder(h=-1) has volume 0). Fail here instead.
+        if manifold.status() != manifold3d.Error.NoError:
+            raise ValueError(f'invalid solid: {manifold.status().name}')
         self.manifold = manifold
 
     # TODO add visual properties (e.g. color, texture)
@@ -611,26 +616,16 @@ def hull2d(*shapes):
 def hull2d_points(points):
     return Shape(CrossSection.hull_points(points))
 
-def _checked(m, what):
-    # Manifold doesn't raise on bad input: it returns a manifold in an error
-    # state, and every boolean with it silently comes back empty
-    # (cube(20,20,20) + cylinder(h=-1) has volume 0). Fail here instead.
-    if m.status() != manifold3d.Error.NoError:
-        raise ValueError(f'{what}: {m.status()}')
-    return m
-
 def cube(x=1, y=1, z=1, center=False):
-    return Solid(_checked(Manifold.cube((x, y, z), center=center),
-        f'cube({x}, {y}, {z})'))
+    return Solid(Manifold.cube((x, y, z), center=center))
 
 def cylinder(h=1, d=1, r=None, center=False, fn=0, outer=False):
     r = r or d/2
     fn = fn or get_circular_segments(r)
     s = 1/np.cos(np.pi/fn) if outer else 1
     a = 180/fn if outer else 0
-    return Solid(_checked(Manifold.cylinder(
-        h, r*s, r*s, circular_segments=fn, center=center),
-        f'cylinder(h={h}, r={r})')).rotate(z=a)
+    return Solid(Manifold.cylinder(
+        h, r*s, r*s, circular_segments=fn, center=center)).rotate(z=a)
 
 def conic(h=1, d1=1, d2=1, r1=None, r2=None, center=False, fn=0, outer=False):
     r1 = r1 or d1/2
@@ -638,13 +633,12 @@ def conic(h=1, d1=1, d2=1, r1=None, r2=None, center=False, fn=0, outer=False):
     fn = fn or get_circular_segments(max(r1,r2))
     s = 1/np.cos(np.pi/fn) if outer else 1
     a = 180/fn if outer else 0
-    return Solid(_checked(Manifold.cylinder(
-        h, r1*s, r2*s, circular_segments=fn, center=center),
-        f'conic(h={h}, r1={r1}, r2={r2})')).rotate(z=a)
+    return Solid(Manifold.cylinder(
+        h, r1*s, r2*s, circular_segments=fn, center=center)).rotate(z=a)
 
 def sphere(d=1, r=None, fn=0):
     r = r or d/2
-    return Solid(_checked(Manifold.sphere(r, fn), f'sphere(r={r})'))
+    return Solid(Manifold.sphere(r, fn))
 
 def circle(d=1, r=None, fn=0, outer=False):
     r = r or d/2
