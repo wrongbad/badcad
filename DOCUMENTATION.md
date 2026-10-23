@@ -108,6 +108,8 @@ The `fn` argument of a function always takes priority over these settings. `fn=0
 
 ## 3D primitives
 
+A negative size (or any other input Manifold rejects) raises `ValueError` here, instead of producing an invalid solid that silently empties every boolean it is used in.
+
 ### `cube(x=1, y=1, z=1, center=False)`
 
 Returns a box of size `x` × `y` × `z`. The box starts at the origin. With `center=True`, the center of the box is at the origin.
