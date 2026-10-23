@@ -598,7 +598,7 @@ To make a hole with a thread, subtract a rod that is slightly larger than the sc
 | `badcad.svg.shape2svg(shape, unit='')` | returns a `Shape` as SVG text |
 | `badcad.gcode.Engraver` | writes engraving G-code. Refer to [badcad.gcode](#badcadgcode). |
 
-`load_stl()` reads only binary STL. The mesh must have no holes.
+`load_stl()` reads only binary STL. The mesh must have no holes. A file with no triangles (an empty export is 84 bytes) raises `ValueError`.
 
 `shape2svg()` makes a black shape on a white rectangle, with the SVG view box set to the bounds of the shape. badcad adds `unit` to the width and the height, for example `'mm'`.
 

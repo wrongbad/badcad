@@ -869,8 +869,11 @@ def load_stl(filename=None, data=None):
         with open(filename, 'rb') as f:
             data = f.read()
     data = np.frombuffer(data[84:], stl_dtype)
+    if len(data) == 0:
+        raise ValueError('STL contains no triangles'
+            + (f': {filename}' if filename else ''))
     verts = data['vert'].reshape(-1,3)
-    idx = np.arange(verts.shape[0]).reshape(-1,3)
+    idx = np.arange(verts.shape[0], dtype=np.uint32).reshape(-1,3)
     m = Mesh(verts, idx)
     m.merge()
     return Solid(Manifold(m))
