@@ -52,7 +52,7 @@ Jupyter: a `Solid` or a `Shape` that is the last value of a cell shows as a 3D p
 pip install git+https://github.com/wrongbad/badcad.git
 ```
 
-The optional dependencies add text and SVG support:
+The optional dependencies add text, SVG and PNG support:
 
 ```bash
 pip install "badcad[all] @ git+https://github.com/wrongbad/badcad.git"
@@ -62,9 +62,8 @@ pip install "badcad[all] @ git+https://github.com/wrongbad/badcad.git"
 |---|---|---|
 | `text` | `pycairo` | `text()` |
 | `svg` | `svgelements` | `text()`, `svg2polygons()` |
-| `all` | both | all of the above |
-
-`Solid.png()` also needs `matplotlib`, which no extra installs.
+| `png` | `matplotlib` | `Solid.png()` |
+| `all` | all three | all of the above |
 
 Import all public names:
 

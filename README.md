@@ -16,7 +16,7 @@ also the pythonic API turns out to be extremely effective for AI agents to build
 
 ```bash
 pip install git+https://github.com/wrongbad/badcad.git
-# optional dependencies (text + svg support)
+# optional dependencies (text + svg + png support)
 pip install "badcad[all] @ git+https://github.com/wrongbad/badcad.git"
 ```
 
