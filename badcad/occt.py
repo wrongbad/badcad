@@ -385,18 +385,20 @@ def boolean(a, b, kind, tags_a=None, tags_b=None, expect=None):
 # --- properties ----------------------------------------------------------------------------------
 
 def volume(shape):
-    """The volume, to a relative precision of 1e-9 (the default is coarse on B-spline faces)."""
+    """The volume, to a relative precision of 1e-7, by Gauss-Kronrod integration. The
+    adaptive Gauss integration (VolumeProperties) is wrong on a B-spline face with many
+    knots: on a prism of a 54-pole spline outline it gave 4.11e6 mm3 with eps 1e-9 and
+    4.80e6 with eps 1e-3, for 4.574e6 (the area of the outline times the height)."""
     p = GProp_GProps()
-    try:
-        BRepGProp.VolumeProperties_s(shape, p, 1e-9, False)
-    except TypeError:
-        BRepGProp.VolumeProperties_s(shape, p)
+    BRepGProp.VolumePropertiesGK_s(shape, p, 1e-7, False, True)
     return p.Mass()
 
 
 def surface_area(shape):
+    """The area, to a relative precision of 1e-7 (the default is coarse on B-spline faces:
+    0.7 % off on the face of a 54-pole spline outline)."""
     p = GProp_GProps()
-    BRepGProp.SurfaceProperties_s(shape, p)
+    BRepGProp.SurfaceProperties_s(shape, p, 1e-7, False)
     return p.Mass()
 
 
