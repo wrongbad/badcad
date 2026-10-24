@@ -23,6 +23,11 @@ _CONTAINS_RAYS = [np.array(d, dtype=float) / np.linalg.norm(d) for d in
 # adds jupyter preview & tweaks API
 class Solid:
     def __init__(self, manifold = Manifold()):
+        # Manifold doesn't raise on bad input: it returns a manifold in an error
+        # state, and every boolean with it silently comes back empty
+        # (cube(20,20,20) + cylinder(h=-1) has volume 0). Fail here instead.
+        if manifold.status() != manifold3d.Error.NoError:
+            raise ValueError(f'invalid solid: {manifold.status().name}')
         self.manifold = manifold
 
     # TODO add visual properties (e.g. color, texture)
@@ -858,8 +863,11 @@ def load_stl(filename=None, data=None):
         with open(filename, 'rb') as f:
             data = f.read()
     data = np.frombuffer(data[84:], stl_dtype)
+    if len(data) == 0:
+        raise ValueError('STL contains no triangles'
+            + (f': {filename}' if filename else ''))
     verts = data['vert'].reshape(-1,3)
-    idx = np.arange(verts.shape[0]).reshape(-1,3)
+    idx = np.arange(verts.shape[0], dtype=np.uint32).reshape(-1,3)
     m = Mesh(verts, idx)
     m.merge()
     return Solid(Manifold(m))

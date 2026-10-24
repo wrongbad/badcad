@@ -52,7 +52,7 @@ Jupyter: a `Solid` or a `Shape` that is the last value of a cell shows as a 3D p
 pip install git+https://github.com/wrongbad/badcad.git
 ```
 
-The optional dependencies add text and SVG support:
+The optional dependencies add text, SVG and PNG support:
 
 ```bash
 pip install "badcad[all] @ git+https://github.com/wrongbad/badcad.git"
@@ -62,9 +62,8 @@ pip install "badcad[all] @ git+https://github.com/wrongbad/badcad.git"
 |---|---|---|
 | `text` | `pycairo` | `text()` |
 | `svg` | `svgelements` | `text()`, `svg2polygons()` |
-| `all` | both | all of the above |
-
-`Solid.png()` also needs `matplotlib`, which no extra installs.
+| `png` | `matplotlib` | `Solid.png()` |
+| `all` | all three | all of the above |
 
 Import all public names:
 
@@ -107,6 +106,8 @@ get_circular_segments(1)            # 8
 The `fn` argument of a function always takes priority over these settings. `fn=0` means "use the settings".
 
 ## 3D primitives
+
+A negative size (or any other input Manifold rejects) raises `ValueError` here, instead of producing an invalid solid that silently empties every boolean it is used in.
 
 ### `cube(x=1, y=1, z=1, center=False)`
 
@@ -596,7 +597,7 @@ To make a hole with a thread, subtract a rod that is slightly larger than the sc
 | `badcad.svg.shape2svg(shape, unit='')` | returns a `Shape` as SVG text |
 | `badcad.gcode.Engraver` | writes engraving G-code. Refer to [badcad.gcode](#badcadgcode). |
 
-`load_stl()` reads only binary STL. The mesh must have no holes.
+`load_stl()` reads only binary STL. The mesh must have no holes. A file with no triangles (an empty export is 84 bytes) raises `ValueError`.
 
 `shape2svg()` makes a black shape on a white rectangle, with the SVG view box set to the bounds of the shape. badcad adds `unit` to the width and the height, for example `'mm'`.
 

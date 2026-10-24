@@ -20,7 +20,8 @@ dependencies = [
 [project.optional-dependencies]
 text = ["pycairo"]
 svg = ["svgelements"]
-all = ["pycairo", "svgelements"]
+png = ["matplotlib"]
+all = ["pycairo", "svgelements", "matplotlib"]
 
 [project.urls]
 Homepage = "https://github.com/wrongbad/badcad"
