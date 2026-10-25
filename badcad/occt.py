@@ -374,9 +374,11 @@ def boolean(a, b, kind, tags_a=None, tags_b=None, expect=None):
             size = _size(r, solid)
             if _off(size):
                 continue
-        if solid and not closed_mesh(r):
+        if solid and not closed_or_pinched_mesh(r):
             # a valid result of the right volume whose mesh has holes (2026-10, Rich: a cut
-            # with a ruled round tool): the next boolean would find its mesh broken
+            # with a ruled round tool): the next boolean would find its mesh broken. A pinch
+            # (two parts that touch along a line: a ball_sweep round that meets itself) is
+            # not a hole
             continue
         return r, tags
     raise BooleanFailed(f'exact boolean {kind!r}: no result passed the checks')
@@ -1401,6 +1403,19 @@ def closed_mesh(shape):
     return bool(np.all(cnt == 2))
 
 
+def closed_or_pinched_mesh(shape):
+    """True if the triangles of mesh(shape) have no hole: each edge is in an even count of
+    triangles. Two each is closed_mesh; four is a pinch, where two parts of the solid touch
+    along a line (the round of a pocket that meets itself in ball_sweep). A hole (an edge in
+    one or three triangles) is still False."""
+    v, t = mesh(shape)
+    if len(t) == 0:
+        return False
+    e = np.sort(np.vstack([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]]), axis=1)
+    _, cnt = np.unique(e, axis=0, return_counts=True)
+    return bool(np.all(cnt % 2 == 0))
+
+
 def _join_bands(parts):
     """One solid from solids that touch only on whole faces: join_touching, or else one fuse
     in the glue mode (for arguments that share faces), checked for validity and volume."""
@@ -2022,11 +2037,13 @@ def fuse_all(shapes, what='fuse_all'):
                 break
         else:
             raise ValueError(f'{what}: the join of piece {k} of {len(shapes)} failed')
-    # the mesh of the union must close (the mesh checks of the booleans after it need that).
-    # Only at the end: two pieces can touch along a line only, until a later piece fills the
-    # space around it (the two wedges of a turned section that crosses its axis)
-    if not closed_mesh(acc):
-        raise ValueError(f'{what}: the mesh of the union does not close')
+    # the mesh of the union must have no hole (the mesh checks of the booleans after it need
+    # that). Only at the end: two pieces can touch along a line only, until a later piece fills
+    # the space around it (the two wedges of a turned section that crosses its axis). A pinch
+    # that stays (two parts of the union that touch along a line: the swept round of a pocket
+    # that meets itself) is not a hole: its edges are in four triangles
+    if not closed_or_pinched_mesh(acc):
+        raise ValueError(f'{what}: the mesh of the union has a hole')
     return acc
 
 
