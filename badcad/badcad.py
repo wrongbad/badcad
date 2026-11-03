@@ -1,5 +1,5 @@
 import manifold3d
-from manifold3d import Manifold, CrossSection, Mesh
+from manifold3d import Manifold, CrossSection, Mesh, Error
 import numpy as np
 import io
 import zipfile
@@ -12,6 +12,75 @@ from .text import text2svg
 from .svg import svg2polygons
 from .dxf import dxf2polygons
 
+import os as _os
+
+# the engine of the primitives: 'manifold' (meshes, the default) or 'occt'
+# (OpenCascade: exact surfaces that can be written as STEP)
+_ENGINE = _os.environ.get('BADCAD_ENGINE', 'manifold')
+_occt_mod = None
+
+
+def set_engine(name):
+    """Choose the engine of the primitives (cube, cylinder, polygon, ...):
+    'manifold' makes meshes, 'occt' makes exact solids (needs the occt
+    extra: pip install badcad[occt]). An operation on exact solids gives an exact
+    solid where the occt engine has an exact method; in all other cases it
+    uses the mesh, and the result is not exact (see Solid.is_exact)."""
+    global _ENGINE
+    if name not in ('manifold', 'occt'):
+        raise ValueError(f'{name=}: use manifold or occt')
+    if name == 'occt':
+        _occt()
+    _ENGINE = name
+
+
+def get_engine():
+    """The name of the engine: 'manifold' or 'occt' (see set_engine)."""
+    return _ENGINE
+
+
+def _occt():
+    global _occt_mod
+    if _occt_mod is None:
+        try:
+            from . import occt as _m
+        except ImportError as ex:
+            raise ImportError(f'the occt engine needs the occt extra: pip install badcad[occt] ({ex})') from ex
+        _occt_mod = _m
+    return _occt_mod
+
+
+set_engine(_ENGINE)         # check BADCAD_ENGINE
+
+
+# BADCAD_MESH_LOG=1 with the occt engine: count each place that makes a mesh
+# (not exact) Solid or Shape, as {(badcad function, caller file:line): count}
+MESH_LOG = {} if _os.environ.get('BADCAD_MESH_LOG') else None
+_HERE = _os.path.dirname(_os.path.abspath(__file__))
+
+
+def _log_mesh(kind):
+    import sys
+    f = sys._getframe(2)
+    op = None
+    while f is not None and _os.path.dirname(_os.path.abspath(f.f_code.co_filename)) == _HERE:
+        op = f.f_code.co_name
+        f = f.f_back
+    if f is None:
+        return
+    key = (kind, op or '?', f'{f.f_code.co_filename}:{f.f_lineno} {f.f_code.co_name}')
+    MESH_LOG[key] = MESH_LOG.get(key, 0) + 1
+
+
+def _exact(*items):
+    return all(x.occ is not None for x in items)
+
+
+def _void(x):
+    # an empty Solid or Shape that holds no exact shape: it does not make an exact result inexact
+    return x.occ is None and x._raw is not None and x._raw.is_empty()
+
+
 stl_dtype = np.dtype([('norm',np.float32,3),('vert',np.float32,9),('pad',np.int8,2)])
 
 # ray directions for Solid.contains(): the axes and the cube diagonals
@@ -22,13 +91,122 @@ _CONTAINS_RAYS = [np.array(d, dtype=float) / np.linalg.norm(d) for d in
 # wrapper for Manifold
 # adds jupyter preview & tweaks API
 class Solid:
-    def __init__(self, manifold = Manifold()):
+    def __init__(self, manifold=None, occ=None, tags=None):
+        if MESH_LOG is not None and manifold is not None and occ is None and _ENGINE == 'occt':
+            _log_mesh('Solid')
+        if manifold is None and occ is None:
+            manifold = Manifold()
         # Manifold doesn't raise on bad input: it returns a manifold in an error
         # state, and every boolean with it silently comes back empty
         # (cube(20,20,20) + cylinder(h=-1) has volume 0). Fail here instead.
-        if manifold.status() != manifold3d.Error.NoError:
+        if manifold is not None and manifold.status() != manifold3d.Error.NoError:
             raise ValueError(f'invalid solid: {manifold.status().name}')
-        self.manifold = manifold
+        self._raw = manifold
+        self.occ = occ              # the exact shape (occt engine), or None
+        self.tags = tags or {}      # occt: {name: [faces]}, see tag()
+        self._sphere = None         # occt: the radius if sphere() made it, for minkowski_sum()
+
+    @property
+    def manifold(self):
+        """The mesh of the solid. For an exact solid, the mesh is made the
+        first time that it is needed (see occt.LINEAR_TOL)."""
+        if self._raw is None:
+            v, t = _occt().mesh(self.occ)
+            if len(t):
+                m = manifold3d.Mesh64(vert_properties=np.ascontiguousarray(v),
+                                      tri_verts=np.ascontiguousarray(t.astype(np.uint64)))
+                self._raw = Manifold(m)
+            else:
+                self._raw = Manifold()
+        return self._raw
+
+    @manifold.setter
+    def manifold(self, m):
+        self._raw, self.occ, self.tags = m, None, {}
+
+    def is_exact(self):
+        """True if the solid has exact surfaces, so that step() can write it."""
+        return self.occ is not None
+
+    def step(self, filename):
+        """Write the exact solid as a STEP file. A solid that a mesh-only
+        operation made (warp, hull, mesh, smooth, ...) has no exact
+        surfaces, and this raises ValueError: a STEP file made from
+        triangles is not a true STEP file."""
+        if self.occ is None:
+            raise ValueError('this solid is not exact (a mesh-only operation made it): no STEP')
+        _occt().write_step(self.occ, filename)
+        return self
+
+    def tag(self, name):
+        """Give the name to all faces of the exact solid. The faces keep
+        the name through booleans, transforms and fillets (see edges())."""
+        if self.occ is None:
+            raise ValueError('tag() needs an exact solid (the occt engine)')
+        o = _occt()
+        return Solid(occ=self.occ, tags=o.merge_tags(self.tags, o.tag_all(self.occ, name)))
+
+    def edges(self, between=None, kind=None):
+        """The sharp edges of the exact solid. between=(a, b): only the
+        edges where a face named a meets a face named b (see tag()).
+        kind='convex' or 'concave': only that kind of edge."""
+        if self.occ is None:
+            raise ValueError('edges() needs an exact solid (the occt engine)')
+        return [Edge(e) for e in _occt().select_edges(self.occ, self.tags, between, kind)]
+
+    def fillet(self, radius, edges):
+        """Round the edges (a list from edges()) with a true fillet of
+        `radius`: concave edges get material, convex edges lose it."""
+        if self.occ is None:
+            raise ValueError('fillet() needs an exact solid (the occt engine)')
+        o = _occt()
+        s, t = o.fillet(self.occ, radius, [e.edge for e in edges], self.tags)
+        return Solid(occ=s, tags=t)
+
+    def chamfer(self, distance, edges):
+        """Cut the edges (a list from edges()) with a 45 degree chamfer."""
+        if self.occ is None:
+            raise ValueError('chamfer() needs an exact solid (the occt engine)')
+        o = _occt()
+        s, t = o.chamfer(self.occ, distance, [e.edge for e in edges], self.tags)
+        return Solid(occ=s, tags=t)
+
+    def _exact_bool(self, other, kind):
+        o = _occt()
+        op = {'+': '__add__', '-': '__sub__', '&': '__xor__'}[kind]
+        # OpenCascade can return a valid but wrong result (an empty intersection of two
+        # solids that overlap): each exact try must give about the volume of the same
+        # boolean on the meshes
+        m = getattr(self.manifold, op)(other.manifold)
+        if self.manifold.status() != Error.NoError or other.manifold.status() != Error.NoError:
+            # the mesh of an input is broken: nothing can check the exact result (2026-10: a
+            # cut that removed nothing passed the other checks), and the STL of the mesh
+            # result is wrong too. A wrong part is worse than no part.
+            raise ValueError('exact boolean: the mesh of an input is broken (not a closed manifold)')
+        try:
+            s, t = o.boolean(self.occ, other.occ, kind, self.tags, other.tags,
+                             expect=(m.volume(), self.manifold.volume()))
+        except o.BooleanFailed:
+            parts = o.solids(other.occ) if kind in ('+', '-') else []
+            if len(parts) > 1:
+                # a tool of separate solids (a round tool in runs) can fail in one boolean
+                # (2026-10, Rich: 20328 mm3 for 4022 mm3) where each solid alone works: one
+                # solid at a time, each with the mesh check of its own boolean
+                acc = self
+                for p in parts:
+                    acc = acc._exact_bool(Solid(occ=p, tags=other.tags), kind)
+                    if acc.occ is None:
+                        return Solid(m)
+                return acc
+            return Solid(m)         # no exact try matched: the result is not exact
+        return Solid(occ=s, tags=t)
+
+    def _exact_xf(self, fn, *args):
+        try:
+            s, t = fn(self.occ, *args, tags=self.tags)
+        except ValueError:
+            return None             # no valid exact result: the caller uses the mesh
+        return Solid(occ=s, tags=t)
 
     # TODO add visual properties (e.g. color, texture)
 
@@ -42,12 +220,31 @@ class Solid:
         return renderer._repr_mimebundle_(**kwargs)
 
     def __add__(self, other):
+        if self.occ is not None or other.occ is not None:
+            if _void(other):
+                return self
+            if _void(self):
+                return other
+            if _exact(self, other):
+                return self._exact_bool(other, '+')
         return Solid(self.manifold + other.manifold)
 
     def __sub__(self, other):
+        if self.occ is not None or other.occ is not None:
+            if _void(other) or _void(self):
+                return self
+            if _exact(self, other):
+                return self._exact_bool(other, '-')
         return Solid(self.manifold - other.manifold)
 
     def __and__(self, other):
+        if self.occ is not None or other.occ is not None:
+            if _void(other):
+                return other
+            if _void(self):
+                return self
+            if _exact(self, other):
+                return self._exact_bool(other, '&')
         # manifold3d XOR is actually AND
         return Solid(self.manifold ^ other.manifold)
 
@@ -55,6 +252,8 @@ class Solid:
         return Solid(self.manifold.as_original())
 
     def bounding_box(self):
+        if self.occ is not None:
+            return _occt().bounding_box(self.occ)
         return self.manifold.bounding_box()
 
     def calculate_curvature(self, gaussian_idx: int, mean_idx: int):
@@ -78,12 +277,20 @@ class Solid:
         return self.move(dx, dy, dz)
 
     def decompose(self):
+        if self.occ is not None:
+            return [Solid(occ=x) for x in _occt().solids(self.occ)]
         return [Solid(m) for m in self.manifold.decompose()]
 
     def prune(self, min_volume=1e-3, largest_only=False):
         """Drop separate bodies smaller than `min_volume` (mm^3): the thin
         skins and slivers that booleans can leave where faces almost meet.
         With largest_only=True, keep only the biggest body."""
+        if self.occ is not None:
+            parts = sorted(self.decompose(), key=lambda s: s.volume(), reverse=True)
+            if largest_only:
+                parts = parts[:1]
+            parts = [s for s in parts if s.volume() >= min_volume]
+            return compose(parts) if parts else Solid()
         parts = sorted(self.manifold.decompose(), key=lambda m: m.volume(), reverse=True)
         if largest_only:
             parts = parts[:1]
@@ -128,13 +335,48 @@ class Solid:
     def get_volume(self):
         return self.manifold.volume()
 
+    def volume(self):
+        """The volume of the solid (mm^3)."""
+        if self.occ is not None:
+            return _occt().volume(self.occ)
+        return self.manifold.volume()
+
+    def surface_area(self):
+        """The surface area of the solid (mm^2)."""
+        if self.occ is not None:
+            return _occt().surface_area(self.occ)
+        return self.manifold.surface_area()
+
+    def slice(self, z=0):
+        """The cut of the solid at height z, as a Shape. The same as
+        cross_section(solid, z)."""
+        if self.occ is not None:
+            f = _occt().section(self.occ, z)
+            return Shape(occ=f) if f is not None else Shape()
+        return Shape(self.manifold.slice(z))
+
+    def mesh_arrays(self):
+        """The triangle mesh of the solid as two numpy arrays: the vertex
+        positions (N, 3) and the vertex indices of each triangle (M, 3)."""
+        m = self.manifold.to_mesh()
+        return np.asarray(m.vert_properties)[:, :3], np.asarray(m.tri_verts)
+
     def hull(self, *others):
         return Solid(Manifold.batch_hull([self.manifold, *[o.manifold for o in others]]))
 
     def is_empty(self):
+        if self.occ is not None:
+            return _occt().is_empty(self.occ)
         return self.manifold.is_empty()
 
     def mirror(self, x=0, y=0, z=0):
+        if self.occ is not None:
+            n = np.array([x, y, z], dtype=float)
+            n /= np.linalg.norm(n)
+            m = np.column_stack([np.eye(3) - 2 * np.outer(n, n), np.zeros(3)])
+            r = self._exact_xf(_occt().transform, m)
+            if r is not None:
+                return r
         return Solid(self.manifold.mirror((x, y, z)))
 
     def num_edge(self):
@@ -159,12 +401,16 @@ class Solid:
         return self.manifold.get_tolerance()
 
     def refine(self, n=2):
+        if self.occ is not None:
+            return self         # an exact solid has no triangles to split
         return Solid(self.manifold.refine(n))
 
     def rotate(self, x=0, y=0, z=0, origin=None):
         """Rotate by x, then y, then z degrees about the world axes. With
         `origin`, rotate about that point and not about (0, 0, 0)."""
         if origin is None:
+            if self.occ is not None:
+                return self._exact_xf(_occt().rotate, x, y, z)
             return Solid(self.manifold.rotate((x, y, z)))
         ox, oy, oz = origin
         return self.move(-ox, -oy, -oz).rotate(x, y, z).move(ox, oy, oz)
@@ -173,6 +419,8 @@ class Solid:
         """Remove vertices that move no surface more than `tolerance` (mm):
         the extra edges that booleans and refine() leave on flat faces.
         With 0, use the tolerance of the solid (see precision())."""
+        if self.occ is not None:
+            return self         # an exact solid has no extra triangle edges
         return Solid(self.manifold.simplify(tolerance))
 
     def project(self):
@@ -188,6 +436,10 @@ class Solid:
         return Solid(self.manifold.smooth_out(min_sharp_angle, min_smoothness).refine(n))
     
     def scale(self, x=1, y=1, z=1):
+        if self.occ is not None:
+            r = self._exact_xf(_occt().transform, np.column_stack([np.diag([x, y, z]), np.zeros(3)]))
+            if r is not None:
+                return r
         return Solid(self.manifold.scale((x, y, z)))
 
     def set_properties(self, *args, **kwargs):
@@ -211,13 +463,29 @@ class Solid:
         o = np.array(origin, dtype=float)
         rot = np.stack([u, v, n])
         m = np.column_stack([rot, -rot @ o])
-        return Shape(self.manifold.transform(m).slice(0))
+        return self.transform(m).slice(0) if self.occ is not None else Shape(self.manifold.transform(m).slice(0))
 
     def split(self, cutter):
+        if _exact(self, cutter):
+            return self & cutter, self - cutter
         inter, diff = self.manifold.split(cutter.manifold)
         return Solid(inter), Solid(diff)
 
+    def _half_space(self, x, y, z, offset):
+        # the exact half space on the side that the normal (x, y, z) points to, from the plane
+        # at distance offset along the unit normal (as manifold3d), big enough to hold the solid
+        n = np.array([x, y, z], dtype=float)
+        k = np.linalg.norm(n)
+        n /= k
+        b = np.array(self.bounding_box(), dtype=float)
+        size = 4 * (np.linalg.norm(b[3:] - b[:3]) + np.abs(b).max() + abs(offset) + 1)
+        box = cube(size, size, size).move(-size / 2, -size / 2, 0)
+        return box.orient(tuple(n), origin=tuple(n * offset))
+
     def split_by_plane(self, x=0, y=0, z=0, offset=0):
+        if self.occ is not None:
+            h = self._half_space(x, y, z, offset)
+            return self & h, self - h
         top, bottom = self.manifold.split_by_plane((x, y, z), offset)
         return Solid(top), Solid(bottom)
 
@@ -228,9 +496,15 @@ class Solid:
         return self.manifold.to_mesh(normal_idx)
     
     def transform(self, matrix):
+        if self.occ is not None:
+            r = self._exact_xf(_occt().transform, matrix)
+            if r is not None:
+                return r
         return Solid(self.manifold.transform(matrix))
 
     def move(self, x=0, y=0, z=0):
+        if self.occ is not None:
+            return self._exact_xf(_occt().move, x, y, z)
         return Solid(self.manifold.translate((x,y,z)))
 
     def orient(self, direction, origin=(0, 0, 0), x_axis=None):
@@ -252,9 +526,11 @@ class Solid:
         x /= np.linalg.norm(x)
         y = np.cross(z, x)
         m = np.column_stack([x, y, z, np.array(origin, dtype=float)])
-        return Solid(self.manifold.transform(m))
+        return self.transform(m)
     
     def trim_by_plane(self, x=0, y=0, z=0, offset=0):
+        if self.occ is not None:
+            return self & self._half_space(x, y, z, offset)
         return Solid(self.manifold.trim_by_plane((x, y, z), offset))
 
     def warp(self, xyz_map_fn):
@@ -264,6 +540,8 @@ class Solid:
         return Solid(self.manifold.warp_batch(xyz_map_fn))
 
     def refine_to_length(self, edge_len):
+        if self.occ is not None:
+            return self         # an exact solid has no triangles to split
         m = self.manifold.to_mesh()
         verts = m.vert_properties.tolist()
         tris = m.tri_verts.tolist()
@@ -296,10 +574,33 @@ class Solid:
         m = manifold3d.Mesh(verts, tris, face_id=np.arange(len(tris)))
         return Solid(Manifold(m))
 
+    def warp_poly(self, fn, degree=2):
+        """Move each point with fn, a polynomial map of the given degree (fn takes
+        and gives (N, 3) arrays of points). On an exact solid the result is exact:
+        each face becomes a NURBS surface of higher degree (occt). On a mesh this
+        is warp_batch(fn)."""
+        if self.occ is not None:
+            try:
+                return Solid(occ=_occt().warp_poly(self.occ, fn, degree))
+            except Exception:
+                pass            # not a polynomial of that degree, or no valid exact result: use the mesh
+        return self.warp_batch(lambda v: np.asarray(fn(np.asarray(v)), dtype=float))
+
     def minkowski_sum(self, other):
+        """The Minkowski sum. With the occt engine, the sum of an exact
+        solid and a sphere() at (0, 0, 0) is exact (an offset); other
+        tools use the mesh."""
+        r = other._sphere
+        if self.occ is not None and r is not None:
+            return Solid(occ=_occt().offset3d(self.occ, r))
         return Solid(self.manifold.minkowski_sum(other.manifold))
 
     def minkowski_difference(self, other):
+        """The Minkowski difference (the erosion). With the occt engine,
+        the difference with a sphere() at (0, 0, 0) is exact."""
+        r = other._sphere
+        if self.occ is not None and r is not None:
+            return Solid(occ=_occt().offset3d(self.occ, -r))
         return Solid(self.manifold.minkowski_difference(other.manifold))
 
     def png(self, filename, elev=25, azim=-60, size=800, color='#6aa0c8', light=(0.4, -0.6, 0.8), max_edge=None):
@@ -378,9 +679,114 @@ class Solid:
         return self if filename else out
 
 
+class Edge:
+    """An edge of an exact solid (see Solid.edges())."""
+    def __init__(self, edge):
+        self.edge = edge
+
+    @property
+    def length(self):
+        return _occt().edge_length(self.edge)
+
+    def points(self, step=0.5):
+        """Points along the edge, at most `step` mm apart."""
+        return _occt().edge_points(self.edge, step)
+
+
 class Shape:
-    def __init__(self, cross_section = CrossSection()):
-        self.cross_section = cross_section
+    def __init__(self, cross_section=None, occ=None):
+        if MESH_LOG is not None and cross_section is not None and occ is None and _ENGINE == 'occt':
+            _log_mesh('Shape')
+        if cross_section is None and occ is None:
+            cross_section = CrossSection()
+        self._raw = cross_section
+        self.occ = occ              # the exact faces in the xy plane (occt engine), or None
+
+    @property
+    def cross_section(self):
+        """The polygons of the shape. For an exact shape, the curves are
+        divided into lines the first time that this is needed (see
+        occt.CURVE_TOL)."""
+        if self._raw is None:
+            loops = _occt().to_polygons(self.occ)
+            self._raw = CrossSection(loops, fillrule=manifold3d.FillRule.Positive) if loops else CrossSection()
+        return self._raw
+
+    @cross_section.setter
+    def cross_section(self, c):
+        self._raw, self.occ = c, None
+
+    def is_exact(self):
+        return self.occ is not None
+
+    def _exact_bool(self, other, kind):
+        o = _occt()
+        op = {'+': '__add__', '-': '__sub__', '&': '__xor__'}[kind]
+        m = getattr(self.cross_section, op)(other.cross_section)        # the same check, with areas
+        try:
+            f, _ = o.boolean(self.occ, other.occ, kind, expect=(m.area(), self.cross_section.area()))
+        except o.BooleanFailed:
+            return Shape(m)
+        return Shape(occ=f)
+
+    def _exact_m(self, m2):
+        # a 2D matrix (2x3) as a 3D transform of the faces
+        m2 = np.asarray(m2, dtype=float)
+        m = np.array([[m2[0, 0], m2[0, 1], 0, m2[0, 2]], [m2[1, 0], m2[1, 1], 0, m2[1, 2]], [0, 0, 1, 0]])
+        return Shape(occ=_occt().transform(self.occ, m))
+
+    def evolve(self, profile=None, round_r=None, join='round'):
+        """An exact solid that a profile sweeps around the outline (occt).
+        profile: steps from (inset 0, z 0); a step (inset, z) is a line to
+        that point, and a step ((inset, z), (inset, z)) is an arc through
+        the first point to the second. At height z the outline moves in by
+        inset (a negative inset moves it out). round_r: a quarter circle
+        that rounds the top edge with radius r. join: 'round' or 'miter' at
+        the convex corners of the outline."""
+        if self.occ is None:
+            raise ValueError('evolve() needs an exact Shape (the occt engine)')
+        return Solid(occ=_occt().evolved(self.occ, profile, round_r, join))
+
+    def round_top(self, r, height=None, walls=None):
+        """An exact solid (occt): the outline extruded by height (r if None), with
+        a true fillet of radius r on each top edge. Each convex corner of the
+        outline must have a radius of more than r. walls (a Shape): only the top
+        edges on the outline of walls get the fillet. Raises ValueError if the
+        fillet fails."""
+        if self.occ is None:
+            raise ValueError('round_top() needs an exact Shape (the occt engine)')
+        return Solid(occ=_occt()._round_top(self.occ, float(r), height,
+                                            None if walls is None else walls.occ))
+
+    def round_top_variable(self, rmax, height):
+        """An exact solid (occt): the outline extruded by height, with a fillet on the
+        top edges whose radius is rmax where it fits and smaller where the outline is
+        narrow or has a small convex corner, with no step (occt.round_top_variable).
+        Raises ValueError if the fillet fails."""
+        if self.occ is None:
+            raise ValueError('round_top_variable() needs an exact Shape (the occt engine)')
+        return Solid(occ=_occt().round_top_variable(self.occ, float(rmax), float(height)))
+
+    def ball_sweep(self, r):
+        """An exact solid (occt): the space that the upper half of a ball of radius r
+        sweeps when its centre moves on this outline, from z = 0 up to r. On an outline
+        inset by r, it is a pocket with a round top edge of radius r where the ball fits
+        (occt.ball_sweep). The outline must have lines and arcs only. Raises ValueError if
+        it fails."""
+        if self.occ is None:
+            raise ValueError('ball_sweep() needs an exact Shape (the occt engine)')
+        return Solid(occ=_occt().ball_sweep(self.occ, float(r)))
+
+    def inset_loft(self, profile, levels=37):
+        """An exact solid (occt) whose section at the height z is this outline inset
+        by d, for (z, d) = profile(u), u from 0 to 1: for example a round with a radius
+        larger than a convex corner, which a fillet can not make (the corner goes away).
+        The sides are ruled bands between exact insets at `levels` values of u,
+        checked against the volume of the true solid (see occt.inset_loft). Raises
+        ValueError if it fails."""
+        if self.occ is None:
+            raise ValueError('inset_loft() needs an exact Shape (the occt engine)')
+        return Solid(occ=_occt().inset_loft(self.occ, profile, levels))
 
     def _repr_mimebundle_(self, **kwargs):
         # called by jupyter to figure out how to display this object
@@ -390,20 +796,44 @@ class Shape:
 
 
     def __add__(self, other):
+        if self.occ is not None or other.occ is not None:
+            if _void(other):
+                return self
+            if _void(self):
+                return other
+            if _exact(self, other):
+                return self._exact_bool(other, '+')
         return Shape(self.cross_section + other.cross_section)
-    
+
     def __sub__(self, other):
+        if self.occ is not None or other.occ is not None:
+            if _void(other) or _void(self):
+                return self
+            if _exact(self, other):
+                return self._exact_bool(other, '-')
         return Shape(self.cross_section - other.cross_section)
 
     def __and__(self, other):
+        if self.occ is not None or other.occ is not None:
+            if _void(other):
+                return other
+            if _void(self):
+                return self
+            if _exact(self, other):
+                return self._exact_bool(other, '&')
         # manifold3d XOR is actually AND
         return Shape(self.cross_section ^ other.cross_section)
-    
+
     def area(self):
+        if self.occ is not None:
+            return _occt().area2d(self.occ)
         return self.cross_section.area()
 
     def bounds(self):
         """returns xmin, ymin, xmax, ymax"""
+        if self.occ is not None:
+            x0, y0, _, x1, y1, _ = _occt().bounding_box(self.occ)
+            return (x0, y0, x1, y1)
         return self.cross_section.bounds()
 
     def align(self, 
@@ -420,9 +850,18 @@ class Shape:
         return self.move(dx, dy)
 
     def decompose(self):
+        if self.occ is not None:
+            return [Shape(occ=f) for f in _occt().faces(self.occ)]
         return [Shape(p) for p in self.cross_section.decompose()]
 
     def extrude(self, height, fn=0, twist=0, scale_top=(1,1), center=False):
+        if self.occ is not None and not twist:
+            o = _occt()
+            if tuple(scale_top) == (1, 1):
+                s = Solid(occ=o.extrude(self.occ, height))
+            else:
+                s = Solid(occ=o.extrude_scaled(self.occ, height, *scale_top))
+            return s.move(z=-height/2) if center else s
         s = Solid(self.cross_section.extrude(
             height,
             n_divisions=fn,
@@ -490,9 +929,15 @@ class Shape:
         return Shape(CrossSection.batch_hull([self.cross_section, *[o.cross_section for o in others]]))
     
     def is_empty(self):
+        if self.occ is not None:
+            return _occt().is_empty(self.occ)
         return self.cross_section.is_empty()
 
     def mirror(self, x=0, y=0):
+        if self.occ is not None:
+            n = np.array([x, y], dtype=float)
+            n /= np.linalg.norm(n)
+            return self._exact_m(np.column_stack([np.eye(2) - 2 * np.outer(n, n), np.zeros(2)]))
         return Shape(self.cross_section.mirror((x, y)))
 
     def num_contour(self):
@@ -502,6 +947,9 @@ class Shape:
         return self.cross_section.num_vert()
 
     def offset(self, delta, join_type='miter', miter_limit=2, circular_segments=0):
+        if self.occ is not None and join_type in ('round', 'miter'):
+            f = _occt().offset2d(self.occ, delta, join_type)
+            return Shape(occ=f) if f is not None else Shape()
         if join_type == 'round':
             join_type = manifold3d.JoinType.Round
         elif join_type == 'miter':
@@ -515,6 +963,8 @@ class Shape:
         ))
 
     def revolve(self, z=360, fn=0):
+        if self.occ is not None:
+            return Solid(occ=_occt().revolve(self.occ, z))
         return Solid(self.cross_section.revolve(
             circular_segments=fn,
             revolve_degrees=z,
@@ -524,23 +974,35 @@ class Shape:
         """Rotate by z degrees. With `origin`, rotate about that point and
         not about (0, 0)."""
         if origin is None:
+            if self.occ is not None:
+                a = np.radians(z)
+                c, sn = np.cos(a), np.sin(a)
+                return self._exact_m([[c, -sn, 0], [sn, c, 0]])
             return Shape(self.cross_section.rotate(z))
         ox, oy = origin
         return self.move(-ox, -oy).rotate(z).move(ox, oy)
     
     def scale(self, x=1, y=1):
+        if self.occ is not None:
+            return self._exact_m([[x, 0, 0], [0, y, 0]])
         return Shape(self.cross_section.scale((x, y)))
 
     def simplify(self, eps):
+        if self.occ is not None:
+            return self         # exact curves have no extra polygon points
         return Shape(self.cross_section.simplify(eps))
 
     def to_polygons(self):
         return self.cross_section.to_polygons()
 
     def transform(self, matrix):
+        if self.occ is not None:
+            return self._exact_m(matrix)
         return Shape(self.cross_section.transform(matrix))
 
     def move(self, x=0, y=0):
+        if self.occ is not None:
+            return Shape(occ=_occt().move(self.occ, x, y, 0))
         return Shape(self.cross_section.translate((x,y)))
 
     def warp(self, xy_map_func):
@@ -567,12 +1029,25 @@ def _flat(items):
     # accept union(a, b, c) and union([a, b, c])
     if len(items) == 1 and isinstance(items[0], (list, tuple)):
         items = items[0]
-    return [x for x in items if not x.is_empty()]
+    items = list(items)
+    # Do not call is_empty() on a mesh item: it evaluates the lazy operations of
+    # manifold3d, and that changes the order of the later operations (another
+    # mesh, with the same form). A batch of manifold3d accepts empty items.
+    if any(x.occ is not None for x in items):
+        items = [x for x in items if not _void(x)]
+    return items
 
 def _batch(items, op):
     items = _flat(items)
     if not items:
         return Solid()
+    if _exact(*items):
+        kind = {manifold3d.OpType.Add: '__add__', manifold3d.OpType.Subtract: '__sub__',
+                manifold3d.OpType.Intersect: '__and__'}[op]
+        out = items[0]
+        for x in items[1:]:
+            out = getattr(out, kind)(x)
+        return out
     if isinstance(items[0], Shape):
         return Shape(CrossSection.batch_boolean([s.cross_section for s in items], op))
     return Solid(Manifold.batch_boolean([s.manifold for s in items], op))
@@ -582,14 +1057,14 @@ def union(*items):
 
     For Shapes, this is much faster than a + b + c + ... in a loop. For
     Solids the gain is smaller, because manifold already collects a chain
-    of + operations. Give the items as arguments or as one list. Empty items are ignored, and no items give
-    an empty Solid."""
+    of + operations. Give the items as arguments or as one list. Empty items
+    add nothing, and no items give an empty Solid."""
     return _batch(items, manifold3d.OpType.Add)
 
 def difference(base, *cutters):
     """Remove many Solids (or many Shapes) from `base` in one batch
     operation. The cutters can be arguments or one list."""
-    if base.is_empty():
+    if base.occ is not None and base.is_empty():
         return base
     return _batch([base, *_flat(cutters)], manifold3d.OpType.Subtract)
 
@@ -598,7 +1073,7 @@ def intersection(*items):
     operation. The items can be arguments or one list."""
     if len(items) == 1 and isinstance(items[0], (list, tuple)):
         items = items[0]
-    if not items or any(x.is_empty() for x in items):
+    if not items or any(x.occ is not None and x.is_empty() for x in items):
         return Shape() if items and isinstance(items[0], Shape) else Solid()
     return _batch(items, manifold3d.OpType.Intersect)
 
@@ -607,6 +1082,9 @@ def hull(*solids):
     return Solid(Manifold.batch_hull(mans))
 
 def hull_points(points):
+    if _ENGINE == 'occt':
+        # the hull of points has only flat faces: exact
+        return Solid(occ=_occt().hull_points(np.asarray(points, dtype=float)))
     return Solid(Manifold.hull_points(points))
 
 def hull2d(*shapes):
@@ -614,13 +1092,30 @@ def hull2d(*shapes):
     return Shape(CrossSection.batch_hull(sects))
 
 def hull2d_points(points):
+    if _ENGINE == 'occt':
+        from scipy.spatial import ConvexHull
+        pts = np.asarray(points, dtype=float)
+        return polygons([pts[ConvexHull(pts).vertices]])
     return Shape(CrossSection.hull_points(points))
 
+def _check_sizes(what, **sizes):
+    # the occt engine: OpenCascade makes a bad solid from a size <= 0 and does not raise
+    bad = {k: v for k, v in sizes.items() if not v > 0}
+    if bad:
+        raise ValueError(f'{what}: the sizes must be more than 0, not {bad}')
+
 def cube(x=1, y=1, z=1, center=False):
+    if _ENGINE == 'occt':
+        _check_sizes('cube', x=x, y=y, z=z)
+        return Solid(occ=_occt().box(x, y, z, center))
     return Solid(Manifold.cube((x, y, z), center=center))
 
 def cylinder(h=1, d=1, r=None, center=False, fn=0, outer=False):
     r = r or d/2
+    if _ENGINE == 'occt':
+        # a true circle: fn and outer only matter for the polygons of a mesh
+        _check_sizes('cylinder', h=h, r=r)
+        return Solid(occ=_occt().cone(h, r, r, center))
     fn = fn or get_circular_segments(r)
     s = 1/np.cos(np.pi/fn) if outer else 1
     a = 180/fn if outer else 0
@@ -630,6 +1125,11 @@ def cylinder(h=1, d=1, r=None, center=False, fn=0, outer=False):
 def conic(h=1, d1=1, d2=1, r1=None, r2=None, center=False, fn=0, outer=False):
     r1 = r1 or d1/2
     r2 = r2 or d2/2
+    if _ENGINE == 'occt':
+        _check_sizes('conic', h=h, r=max(r1, r2))
+        if min(r1, r2) < 0:
+            raise ValueError(f'conic: the radii must not be less than 0, not {r1=}, {r2=}')
+        return Solid(occ=_occt().cone(h, r1, r2, center))
     fn = fn or get_circular_segments(max(r1,r2))
     s = 1/np.cos(np.pi/fn) if outer else 1
     a = 180/fn if outer else 0
@@ -638,19 +1138,31 @@ def conic(h=1, d1=1, d2=1, r1=None, r2=None, center=False, fn=0, outer=False):
 
 def sphere(d=1, r=None, fn=0):
     r = r or d/2
+    if _ENGINE == 'occt':
+        _check_sizes('sphere', r=r)
+        s = Solid(occ=_occt().sphere(r))
+        s._sphere = r           # minkowski_sum() with a sphere at (0, 0, 0) is an exact offset
+        return s
     return Solid(Manifold.sphere(r, fn))
 
 def circle(d=1, r=None, fn=0, outer=False):
     r = r or d/2
+    if _ENGINE == 'occt':
+        _check_sizes('circle', r=r)
+        return Shape(occ=_occt().circle(r))
     fn = fn or get_circular_segments(r)
     s = 1/np.cos(np.pi/fn) if outer else 1
     a = 180/fn if outer else 0
     return Shape(CrossSection.circle(r*s, fn).rotate(a))
 
 def square(x=1, y=1, center=False):
+    if _ENGINE == 'occt':
+        _check_sizes('square', x=x, y=y)
+        x0, y0 = (-x / 2, -y / 2) if center else (0, 0)
+        return Shape(occ=_occt().polygons([[(x0, y0), (x0 + x, y0), (x0 + x, y0 + y), (x0, y0 + y)]]))
     return Shape(CrossSection.square((x, y), center=center))
 
-def polygon(points, fill_rule='even_odd'):
+def _fill_rule(fill_rule):
     if fill_rule == 'even_odd':
         fill_rule = manifold3d.FillRule.EvenOdd
     elif fill_rule == 'negative':
@@ -661,7 +1173,19 @@ def polygon(points, fill_rule='even_odd'):
         fill_rule = manifold3d.FillRule.Positive
     else:
         raise ValueError(f'{fill_rule=}')
-    return Shape(CrossSection([points], fillrule=fill_rule))
+    return fill_rule
+
+def _occt_fill_rule(fill_rule):
+    _fill_rule(fill_rule)       # raises on an unknown name
+    if fill_rule != 'even_odd':
+        raise ValueError(f'{fill_rule=}: the occt engine supports only even_odd')
+
+def polygon(points, fill_rule='even_odd'):
+    if _ENGINE == 'occt':
+        _occt_fill_rule(fill_rule)
+        f = _occt().polygons([points])
+        return Shape(occ=f) if f is not None else Shape()
+    return Shape(CrossSection([points], fillrule=_fill_rule(fill_rule)))
 
 def cross_section(solid, z=0):
     return Shape(solid.manifold.slice(z))
@@ -685,6 +1209,9 @@ def loft(shapes, heights, match='arc'):
         b = _loft_ring(sh.to_polygons())
         k = int(np.argmin(np.linalg.norm(b - rings[-1][0], axis=1)))
         rings.append(np.roll(b, -k, axis=0))
+    if _ENGINE == 'occt':
+        # exact: ruled surfaces between the outlines, as the mesh, with no triangles
+        return Solid(occ=_occt().loft(rings, heights, ruled=True))
     offsets = np.concatenate([[0], np.cumsum([len(r) for r in rings])])
     verts = np.vstack([np.column_stack([r, np.full(len(r), float(z))])
                        for r, z in zip(rings, heights)])
@@ -768,6 +1295,13 @@ def sweep(shape, path, twist=0, closed=False, x_axis=None):
     bend radius larger than the shape, or the sides cut through each
     other."""
     p, t, r, s, err = _frames(path, closed, x_axis)
+    if _ENGINE == 'occt' and not twist:
+        # exact: the path is a smooth curve through the points, and the shape moves along it
+        b = np.cross(t[0], r[0])
+        m = np.column_stack([r[0], b, t[0], p[0]])
+        prof = shape if shape.occ is not None else polygons(shape.to_polygons())
+        face = _occt().transform(prof.occ, m)
+        return Solid(occ=_occt().sweep(face, p, closed=closed, smooth=True))
     polys = [np.asarray(q, dtype=float) for q in shape.to_polygons()]
     flat = np.vstack(polys)
     m = len(flat)
@@ -821,25 +1355,89 @@ def threads(d=8, h=8, pitch=1, depth_ratio=0.6, trap_scale=1, starts=1, fn=0, pi
     return m if lefty else m.mirror(x=1)
 
 
-def mesh(verts, tris, merge=True):
+def curves_shape(curves, join=1e-3, largest=False):
+    """An exact Shape from 2D curves joined end to end into closed outlines (occt
+    engine only): lines, arcs, circles and NURBS splines (see occt.curves_face).
+    Outlines inside an odd count of other outlines are holes. largest=True: only
+    the outline with the largest area."""
+    if _ENGINE != 'occt':
+        raise ValueError('curves_shape() needs the occt engine')
+    f = _occt().curves_face(curves, join, largest)
+    return Shape(occ=f) if f is not None else Shape()
+
+def ruled_loft(rings, heights):
+    """An exact solid through closed polygon rings (lists of (x, y)), each
+    at its height, all with the same point count: point i of one ring joins
+    point i of the next with a ruled surface (occt engine only)."""
+    if _ENGINE != 'occt':
+        raise ValueError('ruled_loft() needs the occt engine')
+    return Solid(occ=_occt().ruled_loft([np.asarray(r, dtype=float) for r in rings], heights))
+
+def join_touching(solids):
+    """One exact solid from exact solids that touch only on whole faces (the parts of one
+    body that a plane cut apart). It removes the shared faces and sews the rest, with no
+    boolean. If that fails (or a part is not exact), this is union(solids)."""
+    if solids and _exact(*solids):
+        try:
+            return Solid(occ=_occt().join_touching([s.occ for s in solids]))
+        except Exception:
+            pass
+    return union(solids)
+
+def compose(solids):
+    """One Solid that holds the given Solids as separate bodies, with no
+    boolean between them. This is fast, but the bodies must not overlap."""
+    if solids and _exact(*solids):
+        o = _occt()
+        return Solid(occ=o.compound([x.occ for x in solids]), tags=o.merge_tags(*[x.tags for x in solids]))
+    return Solid(Manifold.compose([s.manifold for s in solids]))
+
+def polygons(loops, fill_rule='even_odd', smooth=False):
+    """A Shape from many outlines (lists of (x, y) points). fill_rule is
+    the same as for polygon(): with 'even_odd', a loop inside another loop
+    is a hole. smooth=True (occt engine only, even-odd): a dense loop that
+    stands for a curve becomes smooth splines within 0.005 mm of its points,
+    with its sharp corners kept (occt.fit_polyline). The manifold engine
+    ignores smooth."""
+    if _ENGINE == 'occt':
+        _occt_fill_rule(fill_rule)
+        if smooth:
+            o = _occt()
+            f = o.wires_to_faces([w for w in (o.poly_wire(l) for l in loops if len(l) >= 3) if w is not None])
+            return Shape(occ=f) if f is not None else Shape()
+        f = _occt().polygons(loops)
+        return Shape(occ=f) if f is not None else Shape()
+    return Shape(CrossSection(loops, fillrule=_fill_rule(fill_rule)))
+
+def mesh(verts, tris, merge=True, check=True, dtype=np.float64):
     """A Solid from a triangle mesh: verts is an (N, 3) array of points and
     tris an (M, 3) array of vertex indices.
 
     With merge=True, vertices at the same position are joined first, so a
     mesh with duplicate vertices (one set for each triangle, as in STL)
-    still closes. If the triangles wind clockwise (seen from outside), the
-    winding is turned over. Raises ValueError if the mesh is not a closed
-    manifold."""
-    v = np.ascontiguousarray(np.asarray(verts, dtype=np.float64)[:, :3])
-    t = np.ascontiguousarray(np.asarray(tris, dtype=np.uint64))
-    m = manifold3d.Mesh64(vert_properties=v, tri_verts=t)
+    still closes. A mesh that is not a closed manifold raises ValueError.
+    With check=True, a mesh that winds clockwise (seen from outside) is
+    turned over. check=False keeps the winding as it is, and does not
+    calculate the volume. dtype=np.float32 stores the points in single
+    precision, as STL and 3MF files do."""
+    if np.dtype(dtype) == np.float32:
+        make, ttype = manifold3d.Mesh, np.uint32
+    elif np.dtype(dtype) == np.float64:
+        make, ttype = manifold3d.Mesh64, np.uint64
+    else:
+        raise ValueError(f'{dtype=}: use np.float32 or np.float64')
+    v = np.array(np.asarray(verts, dtype=dtype)[:, :3], order="C")
+    t = np.array(tris, dtype=ttype, order="C")
+    m = make(vert_properties=v, tri_verts=t)
     if merge:
         m.merge()
     solid = Manifold(m)
+    if not check:
+        return Solid(solid)
     if solid.status() != manifold3d.Error.NoError:
         raise ValueError(f'mesh is not a closed manifold: {solid.status().name}')
     if solid.volume() < 0:
-        m = manifold3d.Mesh64(vert_properties=v, tri_verts=np.ascontiguousarray(t[:, ::-1]))
+        m = make(vert_properties=v, tri_verts=np.ascontiguousarray(t[:, ::-1]))
         if merge:
             m.merge()
         solid = Manifold(m)
