@@ -1175,8 +1175,14 @@ def _fill_rule(fill_rule):
         raise ValueError(f'{fill_rule=}')
     return fill_rule
 
+def _occt_fill_rule(fill_rule):
+    _fill_rule(fill_rule)       # raises on an unknown name
+    if fill_rule != 'even_odd':
+        raise ValueError(f'{fill_rule=}: the occt engine supports only even_odd')
+
 def polygon(points, fill_rule='even_odd'):
     if _ENGINE == 'occt':
+        _occt_fill_rule(fill_rule)
         f = _occt().polygons([points])
         return Shape(occ=f) if f is not None else Shape()
     return Shape(CrossSection([points], fillrule=_fill_rule(fill_rule)))
@@ -1394,6 +1400,7 @@ def polygons(loops, fill_rule='even_odd', smooth=False):
     with its sharp corners kept (occt.fit_polyline). The manifold engine
     ignores smooth."""
     if _ENGINE == 'occt':
+        _occt_fill_rule(fill_rule)
         if smooth:
             o = _occt()
             f = o.wires_to_faces([w for w in (o.poly_wire(l) for l in loops if len(l) >= 3) if w is not None])

@@ -216,7 +216,7 @@ Returns a `Shape` from one contour. `points` is a list or an array of (x, y) poi
 | `'positive'` | an area that the contour goes around counterclockwise |
 | `'negative'` | an area that the contour goes around clockwise |
 
-A different value raises `ValueError`.
+A different value raises `ValueError`. With the `occt` engine, only `'even_odd'` is available, and a different value raises `ValueError`.
 
 ### `polygons(loops, fill_rule='even_odd', smooth=False)`
 

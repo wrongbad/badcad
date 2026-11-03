@@ -217,3 +217,16 @@ def test_exact_edge_methods_raise_on_mesh():
         box.fillet(0.5, [])
     with pytest.raises(ValueError):
         box.chamfer(0.5, [])
+
+
+def test_occt_polygons_fill_rule():
+    set_engine('occt')
+    try:
+        sq = [(0, 0), (1, 0), (1, 1), (0, 1)]
+        assert close(polygon(sq).area(), 1, 1e-9)
+        with pytest.raises(ValueError):
+            polygon(sq, fill_rule='positive')
+        with pytest.raises(ValueError):
+            polygons([sq], fill_rule='non_zero')
+    finally:
+        set_engine('manifold')
