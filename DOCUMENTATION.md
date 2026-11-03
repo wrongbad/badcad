@@ -6,6 +6,7 @@ This document describes every public class, method, and function in badcad.
 
 - [Concepts](#concepts)
 - [Install and import](#install-and-import)
+- [Engines](#engines)
 - [Circle resolution](#circle-resolution)
 - [3D primitives](#3d-primitives)
 - [2D primitives](#2d-primitives)
@@ -25,6 +26,8 @@ badcad has two object types:
 
 - `Solid` is a 3D body. It wraps a `manifold3d.Manifold`, which is in the `.manifold` attribute.
 - `Shape` is a 2D region. It wraps a `manifold3d.CrossSection`, which is in the `.cross_section` attribute.
+
+With the `occt` engine, a `Solid` or a `Shape` also holds an exact OpenCascade shape in the `.occ` attribute. Refer to [Engines](#engines).
 
 Every operation returns a new object. No operation changes the object that you call it on.
 
@@ -53,7 +56,7 @@ Jupyter: a `Solid` or a `Shape` that is the last value of a cell shows as a 3D p
 pip install git+https://github.com/wrongbad/badcad.git
 ```
 
-The optional dependencies add text, SVG and PNG support:
+The optional dependencies add text, SVG, PNG and STEP support:
 
 ```bash
 pip install "badcad[all] @ git+https://github.com/wrongbad/badcad.git"
@@ -64,7 +67,8 @@ pip install "badcad[all] @ git+https://github.com/wrongbad/badcad.git"
 | `text` | `pycairo` | `text()` |
 | `svg` | `svgelements` | `text()`, `svg2polygons()` |
 | `png` | `matplotlib` | `Solid.png()` |
-| `all` | all three | all of the above |
+| `occt` | `cadquery-ocp-novtk`, `scipy`, `shapely` | the `occt` engine, `Solid.step()` |
+| `all` | all of the above | all of the above |
 
 Import all public names:
 
@@ -73,6 +77,64 @@ from badcad import *
 ```
 
 This import also gives you `Manifold`, `CrossSection`, `Mesh`, `manifold3d`, and `np` (numpy).
+
+## Engines
+
+badcad has two engines. The engine decides what the primitives make.
+
+| Engine | Makes | Export |
+|---|---|---|
+| `manifold` (the default) | triangle meshes (manifold3d) | STL, 3MF |
+| `occt` | exact solids (OpenCascade B-rep): planes, cylinders, cones, spheres, tori and B-splines | STEP, STL, 3MF |
+
+The `occt` engine needs the `occt` extra:
+
+```bash
+pip install "badcad[occt] @ git+https://github.com/wrongbad/badcad.git"
+```
+
+### `set_engine(name)`
+
+Sets the engine of the primitives (`cube()`, `cylinder()`, `square()`, `polygon()`, and the others). `name` is `'manifold'` or `'occt'`. Any other name raises `ValueError`. If the `occt` extra is not installed, `set_engine('occt')` raises `ImportError`.
+
+The engine applies to the objects that you make after the call. It does not change the objects that you made before the call.
+
+```python
+from badcad import *
+
+set_engine('occt')
+part = cube(20, 20, 5) - cylinder(h=5, r=3).move(10, 10, 0)
+part.step('part.step')        # an exact STEP file: the hole is a true cylinder
+```
+
+The environment variable `BADCAD_ENGINE` sets the engine when you import badcad. For example, `BADCAD_ENGINE=occt python part.py`.
+
+### `get_engine()`
+
+Returns the name of the engine: `'manifold'` or `'occt'`.
+
+### Exact and mesh results
+
+An operation on exact solids gives an exact solid if the `occt` engine has an exact method for the operation. These operations are exact:
+
+- the booleans (`+`, `-`, `&`), `union()`, `difference()` and `intersection()`
+- `move()`, `rotate()`, `scale()`, `mirror()`, `transform()`, `align()` and `orient()`
+- `section()`, `split()`, `split_by_plane()`, `trim_by_plane()`, `decompose()` and `prune()`
+- `extrude()` without `twist`, `revolve()`, `Shape.offset()`, `loft()` and `sweep()`
+- `hull_points()` and `hull2d_points()`
+- `minkowski_sum()` and `minkowski_difference()` with a `sphere()` at (0, 0, 0): this is an exact offset
+
+All other operations use the mesh, and the result is not exact. For example: `warp()`, `warp_batch()`, `hull()`, `smooth()`, `mesh()`, `level_set()`, `threads()`, `text()`, `extrude()` with `twist`, and `minkowski_sum()` with a tool that is not a sphere.
+
+Use `is_exact()` to find if a result is exact. `step()` raises `ValueError` on a result that is not exact. badcad does not write a STEP file from triangles.
+
+The `occt` engine makes the mesh of an exact solid only when an operation needs it, for example `stl()` or `display()`. `badcad.occt.set_tolerance(linear=0.01, angular=0.1, curve=0.005)` sets how fine this mesh is:
+
+- `linear` is the largest distance from a triangle to the true surface, in mm.
+- `angular` is the largest angle between two triangles along a curve, in radians.
+- `curve` is the largest distance from a polygon of a `Shape` to its true edge, in mm.
+
+To find the operations that make a mesh, set the environment variable `BADCAD_MESH_LOG=1`. Then the dictionary `badcad.badcad.MESH_LOG` counts each mesh `Solid` or `Shape` that the `occt` engine makes. The key is `(kind, badcad function, file:line of your call)`.
 
 ## Circle resolution
 
@@ -156,9 +218,11 @@ Returns a `Shape` from one contour. `points` is a list or an array of (x, y) poi
 
 A different value raises `ValueError`.
 
-### `polygons(loops, fill_rule='even_odd')`
+### `polygons(loops, fill_rule='even_odd', smooth=False)`
 
 Returns a `Shape` from many contours. Each loop is a list or an array of (x, y) points. `fill_rule` is the same as for `polygon()`. With `'even_odd'`, a loop inside another loop is a hole.
+
+With the `occt` engine, only `'even_odd'` is available. A different `fill_rule` raises `ValueError`. `smooth=True` works only with the `occt` engine. A dense loop that stands for a curve becomes smooth splines within 0.005 mm of its points. The sharp corners stay sharp. The `manifold` engine ignores `smooth`.
 
 ```python
 outer = [(0, 0), (10, 0), (10, 10), (0, 10)]
@@ -377,15 +441,20 @@ bent = cube(20, 2, 2).refine_to_length(1).warp_batch(bend)
 
 A warp moves only the vertices. First use `refine_to_length()`, so that there are vertices to move.
 
+#### `warp_poly(fn, degree=2)`
+
+Moves each point with `fn`, a polynomial map of degree `degree`. `fn` gets an N×3 array and returns an N×3 array. On an exact solid, the result is exact: each face becomes a NURBS surface of a higher degree. If `fn` is not a polynomial of that degree, or if the exact result is not valid, the result is `warp_batch(fn)`, which is a mesh. On a mesh solid, this method is `warp_batch(fn)`.
+
 ### Measurements
 
 | Method | Returns |
 |---|---|
 | `bounding_box()` | `(xmin, ymin, zmin, xmax, ymax, zmax)` |
-| `volume()` | the volume |
-| `surface_area()` | the surface area |
-| `get_volume()` | the volume. This is the same as `volume()`. |
-| `get_surface_area()` | the surface area. This is the same as `surface_area()`. |
+| `volume()` | the volume. On an exact solid, it comes from the true surfaces. |
+| `surface_area()` | the surface area. On an exact solid, it comes from the true surfaces. |
+| `get_volume()` | the volume of the mesh |
+| `get_surface_area()` | the surface area of the mesh |
+| `is_exact()` | `True` if the solid has exact surfaces, so that `step()` can write it |
 | `slice(z=0)` | the cut at the height `z`, as a `Shape`. This is the same as `cross_section(solid, z)`. |
 | `mesh_arrays()` | the mesh as two numpy arrays: the vertices (N×3) and the vertex indices of each triangle (M×3) |
 | `genus()` | the number of through holes. A cube is 0, and a ring is 1. |
@@ -424,6 +493,15 @@ Writes the solid as a binary STL file. With `filename`, it writes the file and r
 part.stl('part.stl')
 ```
 
+#### `step(filename)`
+
+Writes the exact solid as a STEP file and returns the solid. A solid that a mesh operation made has no exact surfaces. For such a solid, `step()` raises `ValueError`. Refer to [Exact and mesh results](#exact-and-mesh-results).
+
+```python
+set_engine('occt')
+cylinder(h=10, r=4).step('pin.step')
+```
+
 #### `png(filename, elev=25, azim=-60, size=800, color='#6aa0c8', light=(0.4, -0.6, 0.8), max_edge=None)`
 
 Renders the solid to a PNG file. It does not need Jupyter or a graphics card, so you can use it in a script or in CI. It needs `matplotlib`. It returns the solid.
@@ -441,6 +519,38 @@ part.png('top.png', elev=90, azim=-90)
 #### `to_mesh(normal_idx=-1)`
 
 Returns the `manifold3d.Mesh` of the solid. `mesh.vert_properties` holds the vertices, and `mesh.tri_verts` holds the triangles.
+
+### Exact edges (occt engine)
+
+These methods need an exact solid. On a mesh solid, they raise `ValueError`.
+
+#### `tag(name)`
+
+Returns a copy of the solid in which all faces have the name `name`. The faces keep the name through booleans, transforms and fillets. Use the names to select edges with `edges()`.
+
+#### `edges(between=None, kind=None)`
+
+Returns the sharp edges of the solid, as a list of `Edge`.
+
+- `between=(a, b)`: only the edges where a face with the name `a` touches a face with the name `b`.
+- `kind='convex'` or `kind='concave'`: only that kind of edge.
+
+```python
+set_engine('occt')
+part = cube(20, 20, 10).tag('block') - cylinder(h=10, r=4).move(10, 10, 0).tag('hole')
+rim = part.edges(between=('block', 'hole'))
+part = part.fillet(1, rim)            # a true round edge on the hole
+```
+
+An `Edge` has the property `length`, and the method `points(step=0.5)`. `points()` returns points along the edge, at most `step` mm apart.
+
+#### `fillet(radius, edges)`
+
+Rounds each edge in `edges` (a list from `edges()`) with a true fillet of `radius`. A convex edge loses material, and a concave edge gets material.
+
+#### `chamfer(distance, edges)`
+
+Cuts each edge in `edges` (a list from `edges()`) with a 45° chamfer of `distance`.
 
 ### Low-level methods
 
@@ -562,6 +672,36 @@ ring = square(2, 5).move(10, 0).revolve()
 | `num_contour()` | the number of contours, including holes |
 | `num_vert()` | the number of vertices |
 | `to_polygons()` | a list of N×2 arrays, one for each contour |
+| `is_exact()` | `True` if the shape has exact edges (the `occt` engine) |
+
+### Exact solids from an outline (occt engine)
+
+These methods need an exact shape. They make exact solids that the mesh engine can not make. If the operation fails, they raise `ValueError`.
+
+#### `evolve(profile=None, round_r=None, join='round')`
+
+Sweeps a profile around the outline. The profile is a list of steps from (inset 0, z 0):
+
+- `(inset, z)` is a line to that point.
+- `((inset, z), (inset, z))` is an arc through the first point to the second point.
+
+At the height `z`, the outline moves in by `inset`. A negative `inset` moves the outline out. `round_r` adds a quarter circle of radius `round_r` that rounds the top edge. `join` is `'round'` or `'miter'` at the convex corners of the outline.
+
+#### `round_top(r, height=None, walls=None)`
+
+Extrudes the outline by `height` (the default is `r`), and puts a true fillet of radius `r` on each top edge. Each convex corner of the outline must have a radius of more than `r`. With `walls` (a `Shape`), only the top edges on the outline of `walls` get the fillet.
+
+#### `round_top_variable(rmax, height)`
+
+Extrudes the outline by `height`, and puts a fillet on the top edges. The radius is `rmax` where it fits. Where the outline is narrow or has a small convex corner, the radius is smaller. The radius changes smoothly, with no step.
+
+#### `ball_sweep(r)`
+
+Returns the volume that the upper half of a ball of radius `r` sweeps when its center moves along the outline, from z = 0 to z = `r`. Use it on an outline that you inset by `r` to make a pocket with a round top edge of radius `r`. The outline must have only lines and arcs.
+
+#### `inset_loft(profile, levels=37)`
+
+Returns a solid whose section at the height `z` is the outline inset by `d`, for `(z, d) = profile(u)` and `u` from 0 to 1. This can make a round with a radius that is larger than a convex corner of the outline, which a fillet can not make. The sides are ruled surfaces between exact insets at `levels` values of `u`.
 
 ## More ways to make a Solid
 
@@ -569,9 +709,31 @@ ring = square(2, 5).move(10, 0).revolve()
 
 Returns one `Solid` that holds all the `solids` as separate bodies. It does no boolean operation, so it is fast. The bodies must not overlap.
 
+### `curves_shape(curves, join=1e-3, largest=False)`
+
+Makes an exact `Shape` from 2D curves (`occt` engine only). badcad joins the curves end to end into closed outlines. badcad closes a gap between two ends that is less than `join`. Each curve is one of these tuples:
+
+| Curve | Tuple |
+|---|---|
+| line | `('line', (x0, y0), (x1, y1))` |
+| arc | `('arc', (cx, cy), r, a0, a1)`, counterclockwise, in degrees |
+| circle | `('circle', (cx, cy), r)` |
+| NURBS spline | `('spline', degree, knots, [(x, y), ...], weights)`, `weights` can be `None` |
+| dense polyline | `('poly', [(x, y), ...], closed)`, changed to smooth splines |
+
+An outline inside an odd number of other outlines is a hole. `largest=True` keeps only the outline with the largest area, with no holes.
+
+### `ruled_loft(rings, heights)`
+
+Makes an exact solid through closed polygon rings (`occt` engine only). Each ring is a list of (x, y) points at its height in `heights`. All rings must have the same number of points. Point i of one ring connects to point i of the next ring with a ruled surface.
+
+### `join_touching(solids)`
+
+Returns one exact solid from exact solids that touch only on full faces. For example, use it on the parts of one body that a plane cut. It removes the shared faces and sews the other faces together, with no boolean operation. If this fails, or if a solid is not exact, the result is `union(solids)`.
+
 ### `mesh(verts, tris, merge=True, check=True, dtype=np.float64)`
 
-Makes a `Solid` from a triangle mesh. `verts` is an N×3 array of points, and `tris` is an M×3 array of vertex indices. A mesh that is not a closed manifold raises `ValueError`.
+Makes a `Solid` from a triangle mesh. `verts` is an N×3 array of points, and `tris` is an M×3 array of vertex indices. A mesh that is not a closed manifold raises `ValueError`. The result is always a mesh, also with the `occt` engine.
 
 - `merge=True` joins the vertices that have the same position. Thus a mesh with duplicate vertices (one set for each triangle, as in STL) closes.
 - `check=True` turns over a mesh that winds clockwise (seen from outside). `check=False` keeps the winding as it is, and does not calculate the volume.
@@ -774,3 +936,5 @@ Engraver(move_speed=200, cut_speed=25).engrave_shape(txt).gcode('hello.gcode')
 - `dxf()` does not read blocks, `ELLIPSE` entities, fit-point splines, or the units of the file.
 - `Solid.set_properties()` does not work. It always raises `ValueError`.
 - `smoothing_threshold` in `display()` does not work correctly. Keep the default, -1.
+- The `occt` engine has no exact method for some operations. These operations give a mesh. Refer to [Exact and mesh results](#exact-and-mesh-results).
+- `Shape.evolve()` runs MakeEvolved of OpenCascade in a child process (`os.fork()`) and stops it after 60 seconds. Thus `evolve()` works only on Linux and macOS.
