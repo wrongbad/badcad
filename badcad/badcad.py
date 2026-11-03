@@ -22,8 +22,8 @@ _occt_mod = None
 
 def set_engine(name):
     """Choose the engine of the primitives (cube, cylinder, polygon, ...):
-    'manifold' makes meshes, 'occt' makes exact solids (needs OCP, from
-    build123d or cadquery). An operation on exact solids gives an exact
+    'manifold' makes meshes, 'occt' makes exact solids (needs the occt
+    extra: pip install badcad[occt]). An operation on exact solids gives an exact
     solid where the occt engine has an exact method; in all other cases it
     uses the mesh, and the result is not exact (see Solid.is_exact)."""
     global _ENGINE
@@ -35,15 +35,22 @@ def set_engine(name):
 
 
 def get_engine():
+    """The name of the engine: 'manifold' or 'occt' (see set_engine)."""
     return _ENGINE
 
 
 def _occt():
     global _occt_mod
     if _occt_mod is None:
-        from . import occt as _m
+        try:
+            from . import occt as _m
+        except ImportError as ex:
+            raise ImportError(f'the occt engine needs the occt extra: pip install badcad[occt] ({ex})') from ex
         _occt_mod = _m
     return _occt_mod
+
+
+set_engine(_ENGINE)         # check BADCAD_ENGINE
 
 
 # BADCAD_MESH_LOG=1 with the occt engine: count each place that makes a mesh
@@ -66,7 +73,7 @@ def _log_mesh(kind):
 
 
 def _exact(*items):
-    return all(getattr(x, 'occ', None) is not None for x in items)
+    return all(x.occ is not None for x in items)
 
 
 def _void(x):
@@ -97,6 +104,7 @@ class Solid:
         self._raw = manifold
         self.occ = occ              # the exact shape (occt engine), or None
         self.tags = tags or {}      # occt: {name: [faces]}, see tag()
+        self._sphere = None         # occt: the radius if sphere() made it, for minkowski_sum()
 
     @property
     def manifold(self):
@@ -149,12 +157,16 @@ class Solid:
     def fillet(self, radius, edges):
         """Round the edges (a list from edges()) with a true fillet of
         `radius`: concave edges get material, convex edges lose it."""
+        if self.occ is None:
+            raise ValueError('fillet() needs an exact solid (the occt engine)')
         o = _occt()
         s, t = o.fillet(self.occ, radius, [e.edge for e in edges], self.tags)
         return Solid(occ=s, tags=t)
 
     def chamfer(self, distance, edges):
         """Cut the edges (a list from edges()) with a 45 degree chamfer."""
+        if self.occ is None:
+            raise ValueError('chamfer() needs an exact solid (the occt engine)')
         o = _occt()
         s, t = o.chamfer(self.occ, distance, [e.edge for e in edges], self.tags)
         return Solid(occ=s, tags=t)
@@ -273,6 +285,12 @@ class Solid:
         """Drop separate bodies smaller than `min_volume` (mm^3): the thin
         skins and slivers that booleans can leave where faces almost meet.
         With largest_only=True, keep only the biggest body."""
+        if self.occ is not None:
+            parts = sorted(self.decompose(), key=lambda s: s.volume(), reverse=True)
+            if largest_only:
+                parts = parts[:1]
+            parts = [s for s in parts if s.volume() >= min_volume]
+            return compose(parts) if parts else Solid()
         parts = sorted(self.manifold.decompose(), key=lambda m: m.volume(), reverse=True)
         if largest_only:
             parts = parts[:1]
@@ -572,7 +590,7 @@ class Solid:
         """The Minkowski sum. With the occt engine, the sum of an exact
         solid and a sphere() at (0, 0, 0) is exact (an offset); other
         tools use the mesh."""
-        r = getattr(other, '_sphere', None)
+        r = other._sphere
         if self.occ is not None and r is not None:
             return Solid(occ=_occt().offset3d(self.occ, r))
         return Solid(self.manifold.minkowski_sum(other.manifold))
@@ -580,7 +598,7 @@ class Solid:
     def minkowski_difference(self, other):
         """The Minkowski difference (the erosion). With the occt engine,
         the difference with a sphere() at (0, 0, 0) is exact."""
-        r = getattr(other, '_sphere', None)
+        r = other._sphere
         if self.occ is not None and r is not None:
             return Solid(occ=_occt().offset3d(self.occ, -r))
         return Solid(self.manifold.minkowski_difference(other.manifold))
@@ -1080,8 +1098,15 @@ def hull2d_points(points):
         return polygons([pts[ConvexHull(pts).vertices]])
     return Shape(CrossSection.hull_points(points))
 
+def _check_sizes(what, **sizes):
+    # the occt engine: OpenCascade makes a bad solid from a size <= 0 and does not raise
+    bad = {k: v for k, v in sizes.items() if not v > 0}
+    if bad:
+        raise ValueError(f'{what}: the sizes must be more than 0, not {bad}')
+
 def cube(x=1, y=1, z=1, center=False):
     if _ENGINE == 'occt':
+        _check_sizes('cube', x=x, y=y, z=z)
         return Solid(occ=_occt().box(x, y, z, center))
     return Solid(Manifold.cube((x, y, z), center=center))
 
@@ -1089,6 +1114,7 @@ def cylinder(h=1, d=1, r=None, center=False, fn=0, outer=False):
     r = r or d/2
     if _ENGINE == 'occt':
         # a true circle: fn and outer only matter for the polygons of a mesh
+        _check_sizes('cylinder', h=h, r=r)
         return Solid(occ=_occt().cone(h, r, r, center))
     fn = fn or get_circular_segments(r)
     s = 1/np.cos(np.pi/fn) if outer else 1
@@ -1100,6 +1126,9 @@ def conic(h=1, d1=1, d2=1, r1=None, r2=None, center=False, fn=0, outer=False):
     r1 = r1 or d1/2
     r2 = r2 or d2/2
     if _ENGINE == 'occt':
+        _check_sizes('conic', h=h, r=max(r1, r2))
+        if min(r1, r2) < 0:
+            raise ValueError(f'conic: the radii must not be less than 0, not {r1=}, {r2=}')
         return Solid(occ=_occt().cone(h, r1, r2, center))
     fn = fn or get_circular_segments(max(r1,r2))
     s = 1/np.cos(np.pi/fn) if outer else 1
@@ -1110,6 +1139,7 @@ def conic(h=1, d1=1, d2=1, r1=None, r2=None, center=False, fn=0, outer=False):
 def sphere(d=1, r=None, fn=0):
     r = r or d/2
     if _ENGINE == 'occt':
+        _check_sizes('sphere', r=r)
         s = Solid(occ=_occt().sphere(r))
         s._sphere = r           # minkowski_sum() with a sphere at (0, 0, 0) is an exact offset
         return s
@@ -1118,6 +1148,7 @@ def sphere(d=1, r=None, fn=0):
 def circle(d=1, r=None, fn=0, outer=False):
     r = r or d/2
     if _ENGINE == 'occt':
+        _check_sizes('circle', r=r)
         return Shape(occ=_occt().circle(r))
     fn = fn or get_circular_segments(r)
     s = 1/np.cos(np.pi/fn) if outer else 1
@@ -1126,6 +1157,7 @@ def circle(d=1, r=None, fn=0, outer=False):
 
 def square(x=1, y=1, center=False):
     if _ENGINE == 'occt':
+        _check_sizes('square', x=x, y=y)
         x0, y0 = (-x / 2, -y / 2) if center else (0, 0)
         return Shape(occ=_occt().polygons([[(x0, y0), (x0 + x, y0), (x0 + x, y0 + y), (x0, y0 + y)]]))
     return Shape(CrossSection.square((x, y), center=center))

@@ -1030,7 +1030,7 @@ def curves_face(curves, join=1e-3, largest=False):
         fx.FixConnected(float(join))
         fx.FixClosed(float(join))
         w = fx.Wire()
-        if w.Closed() if hasattr(w, 'Closed') else True:
+        if w.Closed():
             wires.append(w)
     return wires_to_faces(wires, largest)
 
@@ -1202,11 +1202,14 @@ def revolve(shape, degrees):
 
 def section(shape, z):
     """The cut of the solid at height z, as faces at z 0."""
-    from build123d import Plane, Shape as B
-    cut = B.cast(shape).intersect(Plane.XY.offset(float(z)))
-    if cut is None:
-        return None
-    fs = [f.wrapped for f in cut.faces()]
+    x0, y0, _, x1, y1, _ = bounding_box(shape)
+    pad = 1.0 + max(x1 - x0, y1 - y0)
+    plane = BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(0, 0, float(z)), gp_Dir(0, 0, 1)),
+                                    x0 - pad, x1 + pad, y0 - pad, y1 + pad).Face()
+    op = BRepAlgoAPI_Common(shape, plane)
+    if not op.IsDone():
+        raise ValueError(f'section at z={z} failed')
+    fs = faces(op.Shape())
     if not fs:
         return None
     c = fs[0] if len(fs) == 1 else compound(fs)

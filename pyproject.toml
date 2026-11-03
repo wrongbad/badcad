@@ -21,7 +21,8 @@ dependencies = [
 text = ["pycairo"]
 svg = ["svgelements"]
 png = ["matplotlib"]
-all = ["pycairo", "svgelements", "matplotlib"]
+occt = ["cadquery-ocp-novtk>=8.0.1,<8.1", "scipy>=1.10,<2", "shapely>=2.0,<3"]
+all = ["pycairo", "svgelements", "matplotlib", "cadquery-ocp-novtk>=8.0.1,<8.1", "scipy>=1.10,<2", "shapely>=2.0,<3"]
 
 [project.urls]
 Homepage = "https://github.com/wrongbad/badcad"
